@@ -2,18 +2,34 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <title>太空射擊遊戲 - 完整版</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>太空射擊遊戲 - 智慧跨平台版</title>
     <script src="https://cdn.jsdelivr.net/npm/phaser@3/dist/phaser.min.js"></script>
     <style>
-        body { margin: 0; background: #0a0a0a; display: flex; justify-content: center; align-items: center; height: 100vh; font-family: sans-serif; }
+        body { 
+            margin: 0; 
+            padding: 0;
+            background: #0a0a0a; 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            height: 100vh; 
+            overflow: hidden;
+            font-family: sans-serif; 
+            touch-action: none;
+        }
     </style>
 </head>
 <body>
 <script>
 const config = {
     type: Phaser.AUTO,
-    width: 480,
-    height: 640,
+    scale: {
+        mode: Phaser.Scale.FIT,
+        autoCenter: Phaser.Scale.CENTER_BOTH,
+        width: 480,
+        height: 640
+    },
     physics: {
         default: 'arcade',
         arcade: { debug: false }
@@ -34,7 +50,7 @@ let weaponLevel = 1, weaponText;
 let isShielded = false, shieldSprite;
 let isGameOver = false, isInvulnerable = false;
 let isPaused = false, pauseTextGroup;
-let isGameStarted = false, startTextGroup; // 🕹️ 新增：遊戲開始狀態與 UI 群組
+let isGameStarted = false, startTextGroup;
 let nextBombScoreThreshold = 1000;
 
 // 動態難度變數
@@ -43,6 +59,10 @@ let nextSpeedScoreThreshold = 1500;
 let baseEnemySpeed = 250;
 let spawnDelay = 750;
 let spawnTimer;
+
+// 手機拖曳與裝置判斷
+let isDragging = false;
+let isDesktop = false;
 
 function preload() {
     this.load.setBaseURL('https://labs.phaser.io');
@@ -60,6 +80,9 @@ function preload() {
 }
 
 function create() {
+    // 🖥️ 自動偵測是否為電腦桌機環境
+    isDesktop = this.sys.game.device.os.desktop;
+
     score = 0;
     lives = 5;
     bombs = 3;
@@ -75,7 +98,7 @@ function create() {
     isGameOver = false;
     isInvulnerable = false;
     isPaused = false;
-    isGameStarted = false; // 初始未開始狀態
+    isGameStarted = false;
 
     highScore = localStorage.getItem('space_shooter_highscore') || 0;
 
@@ -90,7 +113,7 @@ function create() {
         emitting: false
     });
 
-    player = this.physics.add.sprite(240, 550, 'ship');
+    player = this.physics.add.sprite(240, 520, 'ship');
     player.setCollideWorldBounds(true);
 
     shieldSprite = this.add.sprite(player.x, player.y, 'shield_bubble');
@@ -113,39 +136,50 @@ function create() {
     highScoreText = this.add.text(16, 40, 'HI-SCORE: ' + highScore, { fontSize: '14px', fill: '#aaa' });
     
     livesText = this.add.text(360, 16, '❤️ x 5', { fontSize: '18px', fill: '#ff4444', fontStyle: 'bold' });
-    bombsText = this.add.text(16, 62, '💣 [X] 大招: 3', { fontSize: '16px', fill: '#ffcc00', fontStyle: 'bold' });
+    
+    // 電腦版提示 [X] 大招，手機版簡化文字
+    const bombLabel = isDesktop ? '💣 [X] 大招: 3' : '💣 大招: 3';
+    bombsText = this.add.text(16, 62, bombLabel, { fontSize: '16px', fill: '#ffcc00', fontStyle: 'bold' });
     weaponText = this.add.text(320, 42, '⚡ 火力: LV1', { fontSize: '16px', fill: '#00ffff', fontStyle: 'bold' });
+
+    // 📱 手機觸控控制與 UI（僅非電腦版才會建立）
+    setupTouchControls.call(this);
 
     // 暫停 UI
     pauseTextGroup = this.add.group();
     const pauseBg = this.add.rectangle(240, 320, 480, 640, 0x000000, 0.6).setDepth(10);
     const pauseTxt = this.add.text(240, 300, 'GAME PAUSED', { fontSize: '36px', fill: '#ffcc00', fontStyle: 'bold' }).setOrigin(0.5).setDepth(10);
-    const resumeTxt = this.add.text(240, 350, '按 [ P ] 或 [ ESC ] 繼續遊戲', { fontSize: '18px', fill: '#ffffff' }).setOrigin(0.5).setDepth(10);
+    const resumeTxt = this.add.text(240, 350, isDesktop ? '按 [ P ] 或 [ ESC ] 繼續遊戲' : '點擊畫面繼續遊戲', { fontSize: '18px', fill: '#ffffff' }).setOrigin(0.5).setDepth(10);
     pauseTextGroup.addMultiple([pauseBg, pauseTxt, resumeTxt]);
     pauseTextGroup.setVisible(false);
 
-    // 🕹️ 戰鬥開始選單 UI
+    // 戰鬥開始選單 UI
     startTextGroup = this.add.group();
     const startBg = this.add.rectangle(240, 320, 480, 640, 0x000000, 0.75).setDepth(20);
-    const titleTxt = this.add.text(240, 180, 'SPACE SHOOTER', { fontSize: '38px', fill: '#00ffff', fontStyle: 'bold' }).setOrigin(0.5).setDepth(20);
-    const subTitleTxt = this.add.text(240, 230, '極速挑戰版', { fontSize: '20px', fill: '#ffcc00' }).setOrigin(0.5).setDepth(20);
+    const titleTxt = this.add.text(240, 160, 'SPACE SHOOTER', { fontSize: '36px', fill: '#00ffff', fontStyle: 'bold' }).setOrigin(0.5).setDepth(20);
+    const subTitleTxt = this.add.text(240, 210, '跨平台智慧適應版', { fontSize: '20px', fill: '#ffcc00' }).setOrigin(0.5).setDepth(20);
     
-    const controlGuide = this.add.text(240, 340, 
-        '[ 操作說明 ]\n\n' +
-        '⬅️ ➡️ : 移動戰鬥機\n' +
+    // 依據裝置自動更換操作說明內容
+    const controlText = isDesktop ? 
+        '【 電腦版操作說明 】\n\n' +
+        '⬅️ ➡️ : 移動飛船\n' +
         'SPACE : 發射子彈\n' +
-        'X 鍵  : 大招(核彈)\n' +
-        'P / ESC : 暫停遊戲', 
-        { fontSize: '16px', fill: '#cccccc', align: 'center', lineSpacing: 6 }
-    ).setOrigin(0.5).setDepth(20);
+        'X 鍵   : 釋放全螢幕大招\n' +
+        'P / ESC : 暫停遊戲' :
+        '【 手機版操作說明 】\n\n' +
+        '📱 手指拖曳飛船（自動發射子彈）\n' +
+        '💣 點擊右下角按鈕釋放大招\n' +
+        '⏸️ 點擊右上角按鈕暫停遊戲';
 
-    const startBtnTxt = this.add.text(240, 480, '👉 按 [ 空白鍵 ] 或 [ 點擊螢幕 ] 開始戰鬥 👈', { 
+    const controlGuide = this.add.text(240, 330, controlText, { fontSize: '16px', fill: '#cccccc', align: 'center', lineSpacing: 6 }).setOrigin(0.5).setDepth(20);
+
+    const startBtnLabel = isDesktop ? '👉 按 [ 空白鍵 ] 或 [ 點擊螢幕 ] 開戰 👈' : '👉 [ 點擊螢幕 ] 開始戰鬥 👈';
+    const startBtnTxt = this.add.text(240, 480, startBtnLabel, { 
         fontSize: '18px', 
         fill: '#00ffcc', 
         fontStyle: 'bold' 
     }).setOrigin(0.5).setDepth(20);
 
-    // 開始按鈕呼吸燈效果
     this.tweens.add({
         targets: startBtnTxt,
         alpha: 0.3,
@@ -156,7 +190,6 @@ function create() {
 
     startTextGroup.addMultiple([startBg, titleTxt, subTitleTxt, controlGuide, startBtnTxt]);
 
-    // 監聽點擊或空白鍵以啟動遊戲
     this.input.keyboard.once('keydown-SPACE', startGame, this);
     this.input.once('pointerdown', startGame, this);
 
@@ -167,15 +200,66 @@ function create() {
     this.physics.add.overlap(player, items, collectItem, null, this);
 }
 
+// 📱 設定手機觸控與虛擬按鈕（電腦版自動跳過按鈕生成）
+function setupTouchControls() {
+    // 只有非桌機（手機/平板）才生成虛擬 UI 按鈕
+    if (!isDesktop) {
+        // 右下角：大招按鈕
+        const bombBtn = this.add.circle(410, 570, 40, 0xffcc00, 0.4)
+            .setInteractive()
+            .setDepth(5);
+        this.add.text(410, 570, '💣\n大招', { fontSize: '16px', fill: '#ffffff', align: 'center', fontStyle: 'bold' })
+            .setOrigin(0.5)
+            .setDepth(5);
+
+        bombBtn.on('pointerdown', () => {
+            triggerUltimate.call(this);
+        });
+
+        // 右上角：暫停按鈕
+        const pauseBtn = this.add.circle(440, 40, 22, 0xffffff, 0.3)
+            .setInteractive()
+            .setDepth(5);
+        this.add.text(440, 40, '⏸️', { fontSize: '18px' })
+            .setOrigin(0.5)
+            .setDepth(5);
+
+        pauseBtn.on('pointerdown', () => {
+            togglePause.call(this);
+        });
+    }
+
+    // 📱 手機拖曳手勢綁定
+    this.input.on('pointerdown', (pointer) => {
+        if (!isDesktop) {
+            if (pointer.y > 500 && pointer.x > 350) return; // 點擊大招區域
+            if (pointer.y < 80 && pointer.x > 380) return;  // 點擊暫停區域
+        }
+        isDragging = true;
+    });
+
+    this.input.on('pointermove', (pointer) => {
+        if (isDragging && isGameStarted && !isGameOver && !isPaused) {
+            // 手機拖曳微調，防止手指遮住飛船
+            if (!isDesktop) {
+                player.x = Phaser.Math.Clamp(pointer.x, 20, 460);
+                player.y = Phaser.Math.Clamp(pointer.y - 30, 40, 600);
+            }
+        }
+    });
+
+    this.input.on('pointerup', () => {
+        isDragging = false;
+    });
+}
+
 function startGame() {
     if (isGameStarted) return;
     isGameStarted = true;
     startTextGroup.setVisible(false);
 
-    // 開始生怪計時器
     startSpawnTimer.call(this);
 
-    // 開場視覺特效
     this.cameras.main.flash(400, 0, 255, 255);
     showFloatingText.call(this, 240, 320, 'READY... GO!', '#00ffff');
 }
@@ -191,7 +275,6 @@ function startSpawnTimer() {
 }
 
 function update(time) {
-    // 若遊戲未開始、已結束或暫停中，皆不處理更新邏輯
     if (!isGameStarted || isGameOver) return;
 
     if (Phaser.Input.Keyboard.JustDown(keyP) || Phaser.Input.Keyboard.JustDown(keyEsc)) {
@@ -202,11 +285,12 @@ function update(time) {
 
     bgTile.tilePositionY -= (2 + (speedLevel - 1) * 0.5);
 
+    // 鍵盤移動控制
     if (cursors.left.isDown) {
         player.setVelocityX(-350);
     } else if (cursors.right.isDown) {
         player.setVelocityX(350);
-    } else {
+    } else if (!isDragging) {
         player.setVelocityX(0);
     }
 
@@ -214,8 +298,10 @@ function update(time) {
         shieldSprite.setPosition(player.x, player.y);
     }
 
-    // 發射子彈
-    if (cursors.space.isDown && time > lastFired) {
+    // 發射子彈：電腦可按住 SPACE，手機可拖曳螢幕
+    const isShooting = cursors.space.isDown || (!isDesktop && (isDragging || this.input.activePointer.isDown));
+    
+    if (isShooting && time > lastFired) {
         if (weaponLevel === 1) {
             fireBullet(player.x, player.y - 20, 0, -500);
         } else if (weaponLevel === 2) {
@@ -266,6 +352,7 @@ function togglePause() {
 function fireBullet(x, y, vx, vy) {
     const bullet = bullets.create(x, y, 'bullet');
     if (bullet) {
+        bullet.setAngle(-90);
         bullet.setVelocity(vx, vy);
     }
 }
@@ -309,6 +396,7 @@ function spawnEnemy() {
 function fireEnemyBullet(x, y) {
     const eBullet = enemyBullets.create(x, y, 'enemyBullet');
     if (eBullet) {
+        eBullet.setAngle(-90);
         eBullet.setVelocityY(320 + (speedLevel * 20));
         eBullet.setTint(0xff0000);
     }
@@ -326,7 +414,8 @@ function addScore(amount) {
 
     if (score >= nextBombScoreThreshold) {
         bombs += 1;
-        bombsText.setText('💣 [X] 大招: ' + bombs);
+        const bombLabel = isDesktop ? '💣 [X] 大招: ' : '💣 大招: ';
+        bombsText.setText(bombLabel + bombs);
         nextBombScoreThreshold += 1000;
         showFloatingText.call(this, player.x, player.y - 40, '+1 BOMB!', '#ffcc00');
     }
@@ -453,7 +542,8 @@ function triggerUltimate() {
     if (bombs <= 0 || !isGameStarted || isGameOver || isPaused) return;
 
     bombs -= 1;
-    bombsText.setText('💣 [X] 大招: ' + bombs);
+    const bombLabel = isDesktop ? '💣 [X] 大招: ' : '💣 大招: ';
+    bombsText.setText(bombLabel + bombs);
 
     this.cameras.main.flash(350, 255, 255, 255);
     this.cameras.main.shake(600, 0.035);
@@ -516,11 +606,12 @@ function applyDamageToPlayer() {
         this.add.text(240, 240, 'GAME OVER', { fontSize: '40px', fill: '#ff0055', fontStyle: 'bold' }).setOrigin(0.5);
         this.add.text(240, 290, '最終得分: ' + score, { fontSize: '22px', fill: '#00ffcc' }).setOrigin(0.5);
         this.add.text(240, 320, '最高紀錄: ' + highScore, { fontSize: '18px', fill: '#aaaaaa' }).setOrigin(0.5);
-        this.add.text(240, 370, '按 [ R ] 鍵重新開始', { fontSize: '20px', fill: '#ffffff' }).setOrigin(0.5);
+        
+        const restartMsg = isDesktop ? '按 [ R ] 鍵重新崛起' : '👉 點擊螢幕 重新崛起 👈';
+        this.add.text(240, 370, restartMsg, { fontSize: '18px', fill: '#ffffff' }).setOrigin(0.5);
 
-        this.input.keyboard.once('keydown-R', () => {
-            this.scene.restart();
-        });
+        this.input.keyboard.once('keydown-R', () => { this.scene.restart(); });
+        this.input.once('pointerdown', () => { this.scene.restart(); });
     } else {
         isInvulnerable = true;
         this.tweens.add({
