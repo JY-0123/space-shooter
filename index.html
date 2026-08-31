@@ -380,12 +380,12 @@ function spawnEnemy() {
             enemy.setTint(0xffaa00);
             enemy.setVelocityY(80 + (speedLevel * 10));
 
-            // 👑 大敵機（Boss）：2 條彈道發射
+            // 👑 大敵機（Boss）：3 條彈道發射
             enemy.shootTimer = this.time.addEvent({
-                delay: 1100,
+                delay: 1000,
                 callback: () => {
                     if (enemy && enemy.active && isGameStarted && !isGameOver && !isPaused) {
-                        fireEnemyBullet.call(this, enemy.x, enemy.y + 40, 2);
+                        fireEnemyBullet.call(this, enemy.x, enemy.y + 40, 3);
                     }
                 },
                 loop: true
@@ -401,7 +401,7 @@ function spawnEnemy() {
 
             // 👾 小敵機：1 條彈道發射
             enemy.shootTimer = this.time.addEvent({
-                delay: 1800,
+                delay: 1300,
                 callback: () => {
                     if (enemy && enemy.active && isGameStarted && !isGameOver && !isPaused) {
                         fireEnemyBullet.call(this, enemy.x, enemy.y + 15, 1);
@@ -422,7 +422,7 @@ function spawnSideEnemies() {
 
     const setupSideShootTimer = (enemy) => {
         enemy.shootTimer = this.time.addEvent({
-            delay: 1600,
+            delay: 1200,
             callback: () => {
                 if (enemy && enemy.active && isGameStarted && !isGameOver && !isPaused) {
                     fireEnemyBullet.call(this, enemy.x, enemy.y + 15, 1);
@@ -451,9 +451,9 @@ function spawnSideEnemies() {
     }
 }
 
-// 💥 敵機發射子彈（count 1 代表小敵機1條彈道，2 代表大敵機2條彈道）
+// 💥 敵機發射子彈（count 1 代表小敵機1條彈道，3 代表大敵機3條彈道）
 function fireEnemyBullet(x, y, count = 1) {
-    const bulletSpeed = 320 + (speedLevel * 20);
+    const bulletSpeed = 400 + (speedLevel * 20);
 
     if (count === 1) {
         // 🔹 小敵機：單發彈道
@@ -463,9 +463,9 @@ function fireEnemyBullet(x, y, count = 1) {
             eBullet.setVelocityY(bulletSpeed);
             eBullet.setTint(0xff0000);
         }
-    } else if (count === 2) {
-        // 🔸 大敵機：雙發彈道
-        const offsets = [-18, 18];
+    } else if (count === 3) {
+        // 🔸 大敵機：三發彈道
+        const offsets = [-36, 0, 36];
         offsets.forEach(offsetX => {
             const eBullet = enemyBullets.create(x + offsetX, y, 'enemyBullet');
             if (eBullet) {
