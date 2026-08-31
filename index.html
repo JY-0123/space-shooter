@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>太空射擊遊戲 - 完整版</title>
+    <script src="https://cdn.jsdelivr.net/npm/phaser@3/dist/phaser.min.js"></script>
+    <style>
+        body { margin: 0; background: #0a0a0a; display: flex; justify-content: center; align-items: center; height: 100vh; font-family: sans-serif; }
+    </style>
+</head>
+<body>
+<script>
+const config = {
+    type: Phaser.AUTO,
+    width: 480,
+    height: 640,
+    physics: {
+        default: 'arcade',
+        arcade: { debug: false }
+    },
+    scene: { preload: preload, create: create, update: update }
+};
+
+const game = new Phaser.Game(config);
+
+let player, cursors, keyX, keyP, keyEsc, bullets, enemyBullets, enemies, items, particles;
+let bgTile;
+let lastFired = 0;
+let score = 0, scoreText;
+let highScore = 0, highScoreText;
+let lives = 5, livesText;
+let bombs = 3, bombsText;
+let weaponLevel = 1, weaponText;
+let isShielded = false, shieldSprite;
+let isGameOver = false, isInvulnerable = false;
+let isPaused = false, pauseTextGroup;
+let isGameStarted = false, startTextGroup; // 🕹️ 新增：遊戲開始狀態與 UI 群組
+let nextBombScoreThreshold = 1000;
+
+// 動態難度變數
+let speedLevel = 1;
+let nextSpeedScoreThreshold = 1500;
+let baseEnemySpeed = 250;
+let spawnDelay = 750;
+let spawnTimer;
+
+function preload() {
+    this.load.setBaseURL('https://labs.phaser.io');
+    this.load.image('bg', 'assets/skies/space3.png');
+    this.load.image('ship', 'assets/sprites/fmship.png');
+    this.load.image('bullet', 'assets/sprites/bullets/bullet5.png');
+    this.load.image('enemyBullet', 'assets/sprites/bullets/bullet7.png');
+    this.load.image('enemy', 'assets/sprites/space-baddie.png');
+    this.load.image('spark', 'assets/particles/blue.png');
+    
+    this.load.image('item_heal', 'assets/sprites/firstaid.png');
+    this.load.image('item_power', 'assets/sprites/gem.png');
+    this.load.image('item_shield', 'assets/sprites/orb-blue.png');
+    this.load.image('shield_bubble', 'assets/sprites/sphere2.png');
+}
+
+function create() {
+    score = 0;
+    lives = 5;
+    bombs = 3;
+    weaponLevel = 1;
+    isShielded = false;
+    nextBombScoreThreshold = 1000;
+    
+    speedLevel = 1;
+    nextSpeedScoreThreshold = 1500;
+    baseEnemySpeed = 250;
+    spawnDelay = 750;
+
+    isGameOver = false;
+    isInvulnerable = false;
+    isPaused = false;
+    isGameStarted = false; // 初始未開始狀態
+
+    highScore = localStorage.getItem('space_shooter_highscore') || 0;
+
+    bgTile = this.add.tileSprite(240, 320, 480, 640, 'bg');
+
+    particles = this.add.particles(0, 0, 'spark', {
+        speed: { min: -300, max: 300 },
+        angle: { min: 0, max: 360 },
+        scale: { start: 1, end: 0 },
+        blendMode: 'ADD',
+        lifespan: 500,
+        emitting: false
+    });
+
+    player = this.physics.add.sprite(240, 550, 'ship');
+    player.setCollideWorldBounds(true);
+
+    shieldSprite = this.add.sprite(player.x, player.y, 'shield_bubble');
+    shieldSprite.setScale(1.8);
+    shieldSprite.setAlpha(0.7);
+    shieldSprite.setVisible(false);
+
+    bullets = this.physics.add.group();
+    enemyBullets = this.physics.add.group();
+    enemies = this.physics.add.group();
+    items = this.physics.add.group();
+
+    cursors = this.input.keyboard.createCursorKeys();
+    keyX = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.X);
+    keyP = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.P);
+    keyEsc = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ESC);
+
+    // UI 介面
+    scoreText = this.add.text(16, 16, 'SCORE: 0', { fontSize: '18px', fill: '#00ffcc', fontStyle: 'bold' });
+    highScoreText = this.add.text(16, 40, 'HI-SCORE: ' + highScore, { fontSize: '14px', fill: '#aaa' });
+    
+    livesText = this.add.text(360, 16, '❤️ x 5', { fontSize: '18px', fill: '#ff4444', fontStyle: 'bold' });
+    bombsText = this.add.text(16, 62, '💣 [X] 大招: 3', { fontSize: '16px', fill: '#ffcc00', fontStyle: 'bold' });
+    weaponText = this.add.text(320, 42, '⚡ 火力: LV1', { fontSize: '16px', fill: '#00ffff', fontStyle: 'bold' });
+
+    // 暫停 UI
+    pauseTextGroup = this.add.group();
+    const pauseBg = this.add.rectangle(240, 320, 480, 640, 0x000000, 0.6).setDepth(10);
+    const pauseTxt = this.add.text(240, 300, 'GAME PAUSED', { fontSize: '36px', fill: '#ffcc00', fontStyle: 'bold' }).setOrigin(0.5).setDepth(10);
+    const resumeTxt = this.add.text(240, 350, '按 [ P ] 或 [ ESC ] 繼續遊戲', { fontSize: '18px', fill: '#ffffff' }).setOrigin(0.5).setDepth(10);
+    pauseTextGroup.addMultiple([pauseBg, pauseTxt, resumeTxt]);
+    pauseTextGroup.setVisible(false);
+
+    // 🕹️ 戰鬥開始選單 UI
+    startTextGroup = this.add.group();
+    const startBg = this.add.rectangle(240, 320, 480, 640, 0x000000, 0.75).setDepth(20);
+    const titleTxt = this.add.text(240, 180, 'SPACE SHOOTER', { fontSize: '38px', fill: '#00ffff', fontStyle: 'bold' }).setOrigin(0.5).setDepth(20);
+    const subTitleTxt = this.add.text(240, 230, '極速挑戰版', { fontSize: '20px', fill: '#ffcc00' }).setOrigin(0.5).setDepth(20);
+    
+    const controlGuide = this.add.text(240, 340, 
+        '[ 操作說明 ]\n\n' +
+        '⬅️ ➡️ : 移動戰鬥機\n' +
+        'SPACE : 發射子彈\n' +
+        'X 鍵  : 大招(核彈)\n' +
+        'P / ESC : 暫停遊戲', 
+        { fontSize: '16px', fill: '#cccccc', align: 'center', lineSpacing: 6 }
+    ).setOrigin(0.5).setDepth(20);
+
+    const startBtnTxt = this.add.text(240, 480, '👉 按 [ 空白鍵 ] 或 [ 點擊螢幕 ] 開始戰鬥 👈', { 
+        fontSize: '18px', 
+        fill: '#00ffcc', 
+        fontStyle: 'bold' 
+    }).setOrigin(0.5).setDepth(20);
+
+    // 開始按鈕呼吸燈效果
+    this.tweens.add({
+        targets: startBtnTxt,
+        alpha: 0.3,
+        duration: 800,
+        yoyo: true,
+        repeat: -1
+    });
+
+    startTextGroup.addMultiple([startBg, titleTxt, subTitleTxt, controlGuide, startBtnTxt]);
+
+    // 監聽點擊或空白鍵以啟動遊戲
+    this.input.keyboard.once('keydown-SPACE', startGame, this);
+    this.input.once('pointerdown', startGame, this);
+
+    // 碰撞偵測
+    this.physics.add.overlap(bullets, enemies, hitEnemy, null, this);
+    this.physics.add.overlap(player, enemies, hitPlayer, null, this);
+    this.physics.add.overlap(player, enemyBullets, hitPlayerWithBullet, null, this);
+    this.physics.add.overlap(player, items, collectItem, null, this);
+}
+
+function startGame() {
+    if (isGameStarted) return;
+    isGameStarted = true;
+    startTextGroup.setVisible(false);
+
+    // 開始生怪計時器
+    startSpawnTimer.call(this);
+
+    // 開場視覺特效
+    this.cameras.main.flash(400, 0, 255, 255);
+    showFloatingText.call(this, 240, 320, 'READY... GO!', '#00ffff');
+}
+
+function startSpawnTimer() {
+    if (spawnTimer) spawnTimer.remove();
+    spawnTimer = this.time.addEvent({
+        delay: spawnDelay,
+        callback: spawnEnemy,
+        callbackScope: this,
+        loop: true
+    });
+}
+
+function update(time) {
+    // 若遊戲未開始、已結束或暫停中，皆不處理更新邏輯
+    if (!isGameStarted || isGameOver) return;
+
+    if (Phaser.Input.Keyboard.JustDown(keyP) || Phaser.Input.Keyboard.JustDown(keyEsc)) {
+        togglePause.call(this);
+    }
+
+    if (isPaused) return;
+
+    bgTile.tilePositionY -= (2 + (speedLevel - 1) * 0.5);
+
+    if (cursors.left.isDown) {
+        player.setVelocityX(-350);
+    } else if (cursors.right.isDown) {
+        player.setVelocityX(350);
+    } else {
+        player.setVelocityX(0);
+    }
+
+    if (isShielded) {
+        shieldSprite.setPosition(player.x, player.y);
+    }
+
+    // 發射子彈
+    if (cursors.space.isDown && time > lastFired) {
+        if (weaponLevel === 1) {
+            fireBullet(player.x, player.y - 20, 0, -500);
+        } else if (weaponLevel === 2) {
+            fireBullet(player.x - 12, player.y - 20, 0, -500);
+            fireBullet(player.x + 12, player.y - 20, 0, -500);
+        } else if (weaponLevel >= 3) {
+            fireBullet(player.x, player.y - 20, 0, -500);
+            fireBullet(player.x, player.y - 20, -150, -480);
+            fireBullet(player.x, player.y - 20, 150, -480);
+        }
+        lastFired = time + 120;
+    }
+
+    if (Phaser.Input.Keyboard.JustDown(keyX)) {
+        triggerUltimate.call(this);
+    }
+
+    // 寶箱磁吸效果
+    items.children.each(item => {
+        if (item && item.active) {
+            const dist = Phaser.Math.Distance.Between(player.x, player.y, item.x, item.y);
+            if (dist < 120) {
+                this.physics.moveToObject(item, player, 320);
+            }
+            if (item.y > 640) item.destroy();
+        }
+    });
+
+    bullets.children.each(b => { if (b && b.y < 0) b.destroy(); });
+    enemyBullets.children.each(eb => { if (eb && eb.y > 640) eb.destroy(); });
+    enemies.children.each(e => { if (e && e.y > 640) e.destroy(); });
+}
+
+function togglePause() {
+    if (!isGameStarted || isGameOver) return;
+    isPaused = !isPaused;
+    if (isPaused) {
+        this.physics.pause();
+        this.tweens.pauseAll();
+        pauseTextGroup.setVisible(true);
+    } else {
+        this.physics.resume();
+        this.tweens.resumeAll();
+        pauseTextGroup.setVisible(false);
+    }
+}
+
+function fireBullet(x, y, vx, vy) {
+    const bullet = bullets.create(x, y, 'bullet');
+    if (bullet) {
+        bullet.setVelocity(vx, vy);
+    }
+}
+
+function spawnEnemy() {
+    if (!isGameStarted || isGameOver || isPaused) return;
+
+    const x = Phaser.Math.Between(40, 440);
+    const enemy = enemies.create(x, -20, 'enemy');
+    
+    if (enemy) {
+        const isBoss = Phaser.Math.Between(1, 100) <= 5;
+        if (isBoss) {
+            enemy.setScale(3.0);
+            enemy.hp = 5 + (speedLevel - 1);
+            enemy.isBoss = true;
+            enemy.setTint(0xffaa00);
+            enemy.setVelocityY(80 + (speedLevel * 10));
+
+            enemy.shootTimer = this.time.addEvent({
+                delay: 1200,
+                callback: () => {
+                    if (enemy && enemy.active && isGameStarted && !isGameOver && !isPaused) {
+                        fireEnemyBullet.call(this, enemy.x, enemy.y + 30);
+                    }
+                },
+                loop: true
+            });
+
+            showFloatingText.call(this, 240, 200, '⚠️ WARNING: BOSS! ⚠️', '#ff0055');
+            this.cameras.main.shake(200, 0.01);
+        } else {
+            const scale = Phaser.Math.FloatBetween(0.8, 1.5);
+            enemy.setScale(scale);
+            enemy.hp = 1;
+            enemy.setVelocityY(baseEnemySpeed + Phaser.Math.Between(-30, 50));
+        }
+    }
+}
+
+function fireEnemyBullet(x, y) {
+    const eBullet = enemyBullets.create(x, y, 'enemyBullet');
+    if (eBullet) {
+        eBullet.setVelocityY(320 + (speedLevel * 20));
+        eBullet.setTint(0xff0000);
+    }
+}
+
+function addScore(amount) {
+    score += amount;
+    scoreText.setText('SCORE: ' + score);
+
+    if (score > highScore) {
+        highScore = score;
+        highScoreText.setText('HI-SCORE: ' + highScore);
+        localStorage.setItem('space_shooter_highscore', highScore);
+    }
+
+    if (score >= nextBombScoreThreshold) {
+        bombs += 1;
+        bombsText.setText('💣 [X] 大招: ' + bombs);
+        nextBombScoreThreshold += 1000;
+        showFloatingText.call(this, player.x, player.y - 40, '+1 BOMB!', '#ffcc00');
+    }
+
+    if (score >= nextSpeedScoreThreshold) {
+        speedLevel += 1;
+        nextSpeedScoreThreshold += 1500;
+        
+        baseEnemySpeed += 40;
+        spawnDelay = Math.max(250, spawnDelay - 80);
+
+        startSpawnTimer.call(this);
+
+        showFloatingText.call(this, 240, 250, '⚡ SPEED UP! LV.' + speedLevel + ' ⚡', '#00ffff');
+        this.cameras.main.flash(300, 0, 255, 255);
+    }
+}
+
+function hitEnemy(bullet, enemy) {
+    bullet.destroy();
+    enemy.hp -= 1;
+    particles.explode(8, enemy.x, enemy.y);
+
+    if (enemy.hp <= 0) {
+        particles.explode(25, enemy.x, enemy.y);
+        this.cameras.main.shake(100, 0.005);
+        
+        if (enemy.shootTimer) enemy.shootTimer.remove();
+
+        if (Phaser.Math.Between(1, 100) <= 5) {
+            spawnItem.call(this, enemy.x, enemy.y);
+        }
+
+        const pts = enemy.isBoss ? 50 : 10;
+        addScore.call(this, pts);
+        enemy.destroy();
+    } else {
+        enemy.setTint(0xffffff);
+        this.time.delayedCall(50, () => enemy.setTint(0xffaa00));
+    }
+}
+
+function spawnItem(x, y) {
+    const types = ['heal', 'power', 'shield'];
+    const chosenType = Phaser.Utils.Array.GetRandom(types);
+    
+    let key = 'item_heal';
+    if (chosenType === 'power') key = 'item_power';
+    if (chosenType === 'shield') key = 'item_shield';
+
+    const item = items.create(x, y, key);
+    if (item) {
+        item.type = chosenType;
+        item.setVelocityY(150);
+        this.tweens.add({
+            targets: item,
+            alpha: 0.5,
+            duration: 200,
+            yoyo: true,
+            repeat: -1
+        });
+    }
+}
+
+function collectItem(player, item) {
+    const type = item.type;
+    item.destroy();
+
+    particles.explode(20, player.x, player.y);
+
+    if (type === 'heal') {
+        if (lives < 5) {
+            lives += 1;
+            livesText.setText('❤️ x ' + lives);
+            showFloatingText.call(this, player.x, player.y - 30, '+1 HP', '#ff4444');
+        } else {
+            addScore.call(this, 100);
+            showFloatingText.call(this, player.x, player.y - 30, '+100 PTS', '#ffff00');
+        }
+    } else if (type === 'power') {
+        if (weaponLevel < 3) {
+            weaponLevel += 1;
+            weaponText.setText('⚡ 火力: LV' + (weaponLevel === 3 ? 'MAX' : weaponLevel));
+            showFloatingText.call(this, player.x, player.y - 30, 'POWER UP!', '#00ffff');
+        } else {
+            addScore.call(this, 200);
+            showFloatingText.call(this, player.x, player.y - 30, '+200 PTS', '#ffff00');
+        }
+    } else if (type === 'shield') {
+        activateShield.call(this);
+        showFloatingText.call(this, player.x, player.y - 30, 'SHIELD ON!', '#0088ff');
+    }
+}
+
+function activateShield() {
+    isShielded = true;
+    shieldSprite.setVisible(true);
+
+    if (this.shieldTimer) this.shieldTimer.remove();
+
+    this.shieldTimer = this.time.delayedCall(5000, () => {
+        isShielded = false;
+        shieldSprite.setVisible(false);
+    });
+}
+
+function showFloatingText(x, y, message, color) {
+    const txt = this.add.text(x, y, message, {
+        fontSize: '22px',
+        fill: color,
+        fontStyle: 'bold'
+    }).setOrigin(0.5);
+
+    this.tweens.add({
+        targets: txt,
+        y: y - 50,
+        alpha: 0,
+        duration: 1000,
+        onComplete: () => txt.destroy()
+    });
+}
+
+function triggerUltimate() {
+    if (bombs <= 0 || !isGameStarted || isGameOver || isPaused) return;
+
+    bombs -= 1;
+    bombsText.setText('💣 [X] 大招: ' + bombs);
+
+    this.cameras.main.flash(350, 255, 255, 255);
+    this.cameras.main.shake(600, 0.035);
+
+    enemyBullets.clear(true, true);
+
+    const activeEnemies = [...enemies.getChildren()];
+    activeEnemies.forEach(enemy => {
+        if (enemy && enemy.active) {
+            if (enemy.shootTimer) enemy.shootTimer.remove();
+            particles.explode(40, enemy.x, enemy.y);
+            const pts = enemy.isBoss ? 50 : 10;
+            addScore.call(this, pts);
+            enemy.destroy();
+        }
+    });
+}
+
+function hitPlayerWithBullet(player, bullet) {
+    bullet.destroy();
+    applyDamageToPlayer.call(this);
+}
+
+function hitPlayer(player, enemy) {
+    if (enemy.shootTimer) enemy.shootTimer.remove();
+    enemy.destroy();
+    applyDamageToPlayer.call(this);
+}
+
+function applyDamageToPlayer() {
+    if (!isGameStarted || isGameOver || isInvulnerable || isPaused) return;
+
+    if (isShielded) {
+        isShielded = false;
+        shieldSprite.setVisible(false);
+        if (this.shieldTimer) this.shieldTimer.remove();
+        
+        this.cameras.main.shake(150, 0.01);
+        particles.explode(30, player.x, player.y);
+        showFloatingText.call(this, player.x, player.y - 30, 'SHIELD BROKEN!', '#ff9900');
+        return;
+    }
+
+    lives -= 1;
+    livesText.setText('❤️ x ' + lives);
+
+    if (weaponLevel > 1) {
+        weaponLevel -= 1;
+        weaponText.setText('⚡ 火力: LV' + weaponLevel);
+    }
+
+    this.cameras.main.shake(250, 0.02);
+    particles.explode(30, player.x, player.y);
+
+    if (lives <= 0) {
+        isGameOver = true;
+        this.physics.pause();
+        player.setTint(0xff0000);
+
+        this.add.text(240, 240, 'GAME OVER', { fontSize: '40px', fill: '#ff0055', fontStyle: 'bold' }).setOrigin(0.5);
+        this.add.text(240, 290, '最終得分: ' + score, { fontSize: '22px', fill: '#00ffcc' }).setOrigin(0.5);
+        this.add.text(240, 320, '最高紀錄: ' + highScore, { fontSize: '18px', fill: '#aaaaaa' }).setOrigin(0.5);
+        this.add.text(240, 370, '按 [ R ] 鍵重新開始', { fontSize: '20px', fill: '#ffffff' }).setOrigin(0.5);
+
+        this.input.keyboard.once('keydown-R', () => {
+            this.scene.restart();
+        });
+    } else {
+        isInvulnerable = true;
+        this.tweens.add({
+            targets: player,
+            alpha: 0.2,
+            duration: 100,
+            yoyo: true,
+            repeat: 7,
+            onComplete: () => {
+                player.setAlpha(1);
+                isInvulnerable = false;
+            }
+        });
+    }
+}
+</script>
+</body>
+</html>
