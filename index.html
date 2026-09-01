@@ -3,30 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>太空射擊遊戲 - 智慧跨平台版</title>
+    <title>太空射擊遊戲 - Boss機制完全修復版</title>
     <script src="https://cdn.jsdelivr.net/npm/phaser@3/dist/phaser.min.js"></script>
     <style>
-        * {
-            box-sizing: border-box;
-        }
+        * { box-sizing: border-box; }
         html, body { 
-            margin: 0; 
-            padding: 0;
-            width: 100%;
-            height: 100%;
+            margin: 0; padding: 0;
+            width: 100%; height: 100%;
             background: #000000; 
-            display: flex; 
-            justify-content: center; 
-            align-items: center; 
-            overflow: hidden;
-            font-family: sans-serif; 
-            touch-action: none;
+            display: flex; justify-content: center; align-items: center; 
+            overflow: hidden; font-family: sans-serif; touch-action: none;
         }
-        canvas {
-            display: block;
-            margin: auto;
-            box-shadow: 0 0 20px rgba(0, 255, 255, 0.2);
-        }
+        canvas { display: block; margin: auto; box-shadow: 0 0 20px rgba(0, 255, 255, 0.2); }
     </style>
 </head>
 <body>
@@ -36,9 +24,9 @@ const config = {
     scale: {
         mode: Phaser.Scale.FIT,
         autoCenter: Phaser.Scale.CENTER_BOTH,
-        width: 480,
-        height: 640
+        width: 480, height: 640
     },
+    fps: { target: 60, forceSetTimeOut: true },
     physics: {
         default: 'arcade',
         arcade: { debug: false }
@@ -62,6 +50,16 @@ let isPaused = false, pauseTextGroup;
 let isGameStarted = false, startTextGroup;
 let nextBombScoreThreshold = 1000;
 
+// ⚡ 激光雷射相關變數
+let laserGraphics, laserZone;
+
+// 👾 超級巨型 Boss 相關變數
+let megaBoss = null;
+let bossHpBg, bossHpBar, bossHpText;
+let megaBossTimer;
+let megaBossAttackTimer = null;
+let megaBossCount = 0;
+
 // 動態難度變數
 let speedLevel = 1;
 let nextSpeedScoreThreshold = 1500;
@@ -69,7 +67,6 @@ let baseEnemySpeed = 250;
 let spawnDelay = 750;
 let spawnTimer;
 
-// 手機拖曳與裝置判斷
 let isDragging = false;
 let isDesktop = false;
 
@@ -91,31 +88,23 @@ function preload() {
 function create() {
     isDesktop = this.sys.game.device.os.desktop;
 
-    score = 0;
-    lives = 5;
-    bombs = 3;
-    weaponLevel = 1;
-    isShielded = false;
+    score = 0; lives = 5; bombs = 3; weaponLevel = 1; isShielded = false;
     nextBombScoreThreshold = 1000;
-    
-    speedLevel = 1;
-    nextSpeedScoreThreshold = 1500;
-    baseEnemySpeed = 250;
-    spawnDelay = 750;
-
-    isGameOver = false;
-    isInvulnerable = false;
-    isPaused = false;
-    isGameStarted = false;
+    speedLevel = 1; nextSpeedScoreThreshold = 1500;
+    baseEnemySpeed = 250; spawnDelay = 750;
+    isGameOver = false; isInvulnerable = false; isPaused = false; isGameStarted = false;
+    megaBoss = null;
+    megaBossCount = 0;
 
     highScore = localStorage.getItem('space_shooter_highscore') || 0;
 
     bgTile = this.add.tileSprite(240, 320, 480, 640, 'bg');
 
+    // 🔧 修正：相容 Phaser 3.60+ 新版粒子系統寫法
     particles = this.add.particles(0, 0, 'spark', {
-        speed: { min: -300, max: 300 },
+        speed: { min: -350, max: 350 },
         angle: { min: 0, max: 360 },
-        scale: { start: 1, end: 0 },
+        scale: { start: 1.2, end: 0 },
         blendMode: 'ADD',
         lifespan: 500,
         emitting: false
@@ -125,33 +114,37 @@ function create() {
     player.setCollideWorldBounds(true);
 
     shieldSprite = this.add.sprite(player.x, player.y, 'shield_bubble');
-    shieldSprite.setScale(1.8);
-    shieldSprite.setAlpha(0.7);
-    shieldSprite.setVisible(false);
+    shieldSprite.setScale(1.8).setAlpha(0.7).setVisible(false);
 
     bullets = this.physics.add.group();
     enemyBullets = this.physics.add.group();
     enemies = this.physics.add.group();
     items = this.physics.add.group();
 
+    laserGraphics = this.add.graphics().setDepth(5);
+    laserZone = this.add.zone(0, 0, 24, 640);
+    this.physics.add.existing(laserZone);
+    laserZone.body.setAllowGravity(false);
+    laserZone.setActive(false);
+
     cursors = this.input.keyboard.createCursorKeys();
     keyX = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.X);
     keyP = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.P);
     keyEsc = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ESC);
 
-    // UI 介面
     scoreText = this.add.text(16, 16, 'SCORE: 0', { fontSize: '18px', fill: '#00ffcc', fontStyle: 'bold' });
     highScoreText = this.add.text(16, 40, 'HI-SCORE: ' + highScore, { fontSize: '14px', fill: '#aaa' });
-    
     livesText = this.add.text(360, 16, '❤️ x 5', { fontSize: '18px', fill: '#ff4444', fontStyle: 'bold' });
-    
     const bombLabel = isDesktop ? '💣 [X] 核彈: 3' : '💣 核彈: 3';
     bombsText = this.add.text(16, 62, bombLabel, { fontSize: '16px', fill: '#ffcc00', fontStyle: 'bold' });
     weaponText = this.add.text(320, 42, '⚡ 火力: LV1', { fontSize: '16px', fill: '#00ffff', fontStyle: 'bold' });
 
+    bossHpBg = this.add.rectangle(240, 95, 300, 16, 0x333333).setStrokeStyle(2, 0xff0055).setDepth(15).setVisible(false);
+    bossHpBar = this.add.rectangle(90, 87, 300, 16, 0xff0055).setOrigin(0, 0).setDepth(15).setVisible(false);
+    bossHpText = this.add.text(240, 72, '⚠️ MEGA BOSS ⚠️', { fontSize: '14px', fill: '#ff0055', fontStyle: 'bold' }).setOrigin(0.5).setDepth(15).setVisible(false);
+
     setupTouchControls.call(this);
 
-    // 暫停 UI
     pauseTextGroup = this.add.group();
     const pauseBg = this.add.rectangle(0, 0, 480, 640, 0x000000, 0.65).setOrigin(0, 0).setDepth(10);
     const pauseTxt = this.add.text(240, 300, 'GAME PAUSED', { fontSize: '36px', fill: '#ffcc00', fontStyle: 'bold' }).setOrigin(0.5).setDepth(10);
@@ -159,87 +152,56 @@ function create() {
     pauseTextGroup.addMultiple([pauseBg, pauseTxt, resumeTxt]);
     pauseTextGroup.setVisible(false);
 
-    // 戰鬥開始選單 UI
     startTextGroup = this.add.group();
     const startBg = this.add.rectangle(0, 0, 480, 640, 0x000000, 0.75).setOrigin(0, 0).setDepth(20);
     const titleTxt = this.add.text(240, 160, 'SPACE SHOOTER', { fontSize: '36px', fill: '#00ffff', fontStyle: 'bold' }).setOrigin(0.5).setDepth(20);
-    const subTitleTxt = this.add.text(240, 210, '跨平台智慧適應版', { fontSize: '20px', fill: '#ffcc00' }).setOrigin(0.5).setDepth(20);
+    const subTitleTxt = this.add.text(240, 210, 'Boss修復完成版', { fontSize: '20px', fill: '#ffcc00' }).setOrigin(0.5).setDepth(20);
     
     const controlText = isDesktop ? 
-        '【 電腦版操作說明 】\n\n' +
-        '⬅️ ➡️ : 移動飛船\n' +
-        'SPACE : 發射子彈\n' +
-        'X 鍵   : 釋放核彈\n' +
-        'P / ESC : 暫停遊戲' :
-        '【 手機版操作說明 】\n\n' +
-        '📱 手指拖曳飛船（自動發射子彈）\n' +
-        '💣 點擊右下角按鈕釋放核彈\n' +
-        '⏸️ 點擊右上角按鈕暫停遊戲';
+        '【 電腦版操作說明 】\n\n⬅️ ➡️ : 移動飛船\nSPACE : 發射子彈 / 激光\nX 鍵   : 釋放核彈\nP / ESC : 暫停遊戲' :
+        '【 手機版操作說明 】\n\n📱 手指控制戰鬥機（自動發射子彈/激光）\n💣 點擊右下角按鈕釋放核彈\n⏸️ 點擊右上角按鈕暫停遊戲';
 
     const controlGuide = this.add.text(240, 330, controlText, { fontSize: '16px', fill: '#cccccc', align: 'center', lineSpacing: 6 }).setOrigin(0.5).setDepth(20);
-
     const startBtnLabel = isDesktop ? '👉 按 [ 空白鍵 ] 或 [ 點擊螢幕 ] 開戰 👈' : '👉 [ 點擊螢幕 ] 開始戰鬥 👈';
-    const startBtnTxt = this.add.text(240, 480, startBtnLabel, { 
-        fontSize: '18px', 
-        fill: '#00ffcc', 
-        fontStyle: 'bold' 
-    }).setOrigin(0.5).setDepth(20);
+    const startBtnTxt = this.add.text(240, 480, startBtnLabel, { fontSize: '18px', fill: '#00ffcc', fontStyle: 'bold' }).setOrigin(0.5).setDepth(20);
 
-    this.tweens.add({
-        targets: startBtnTxt,
-        alpha: 0.3,
-        duration: 800,
-        yoyo: true,
-        repeat: -1
-    });
-
+    this.tweens.add({ targets: startBtnTxt, alpha: 0.3, duration: 800, yoyo: true, repeat: -1 });
     startTextGroup.addMultiple([startBg, titleTxt, subTitleTxt, controlGuide, startBtnTxt]);
 
-    this.input.keyboard.once('keydown-SPACE', startGame, this);
-    this.input.once('pointerdown', startGame, this);
+    // 🔧 修正：監聽開始邏輯
+    const onStart = () => {
+        if (!isGameStarted) {
+            startGame.call(this);
+        }
+    };
+    this.input.keyboard.once('keydown-SPACE', onStart);
+    this.input.once('pointerdown', onStart);
 
-    this.time.addEvent({
-        delay: 25000,
-        callback: spawnSideEnemies,
-        callbackScope: this,
-        loop: true
-    });
+    this.time.addEvent({ delay: 25000, callback: spawnSideEnemies, callbackScope: this, loop: true });
 
+    // 🎯 碰撞綁定
     this.physics.add.overlap(bullets, enemies, hitEnemy, null, this);
     this.physics.add.overlap(player, enemies, hitPlayer, null, this);
     this.physics.add.overlap(player, enemyBullets, hitPlayerWithBullet, null, this);
     this.physics.add.overlap(player, items, collectItem, null, this);
+    this.physics.add.overlap(laserZone, enemies, hitEnemyWithLaser, null, this);
 }
 
 function setupTouchControls() {
     if (!isDesktop) {
-        const bombBtn = this.add.circle(410, 570, 40, 0xffcc00, 0.4)
-            .setInteractive()
-            .setDepth(5);
-        this.add.text(410, 570, '💣\n大招', { fontSize: '16px', fill: '#ffffff', align: 'center', fontStyle: 'bold' })
-            .setOrigin(0.5)
-            .setDepth(5);
+        const bombBtn = this.add.circle(410, 570, 40, 0xffcc00, 0.4).setInteractive().setDepth(5);
+        this.add.text(410, 570, '💣\n核彈', { fontSize: '16px', fill: '#ffffff', align: 'center', fontStyle: 'bold' }).setOrigin(0.5).setDepth(5);
+        bombBtn.on('pointerdown', () => { triggerUltimate.call(this); });
 
-        bombBtn.on('pointerdown', () => {
-            triggerUltimate.call(this);
-        });
-
-        const pauseBtn = this.add.circle(440, 40, 22, 0xffffff, 0.3)
-            .setInteractive()
-            .setDepth(5);
-        this.add.text(440, 40, '⏸️', { fontSize: '18px' })
-            .setOrigin(0.5)
-            .setDepth(5);
-
-        pauseBtn.on('pointerdown', () => {
-            togglePause.call(this);
-        });
+        const pauseBtn = this.add.circle(440, 40, 22, 0xffffff, 0.3).setInteractive().setDepth(5);
+        this.add.text(440, 40, '⏸️', { fontSize: '18px' }).setOrigin(0.5).setDepth(5);
+        pauseBtn.on('pointerdown', () => { togglePause.call(this); });
     }
 
     this.input.on('pointerdown', (pointer) => {
         if (!isDesktop) {
             if (pointer.y > 500 && pointer.x > 350) return; 
-            if (pointer.y < 80 && pointer.x > 380) return;  
+            if (pointer.y < 80 && pointer.x > 380) return;   
         }
         isDragging = true;
     });
@@ -253,17 +215,21 @@ function setupTouchControls() {
         }
     });
 
-    this.input.on('pointerup', () => {
-        isDragging = false;
-    });
+    this.input.on('pointerup', () => { isDragging = false; });
 }
 
 function startGame() {
     if (isGameStarted) return;
     isGameStarted = true;
     startTextGroup.setVisible(false);
-
     startSpawnTimer.call(this);
+
+    megaBossTimer = this.time.addEvent({
+        delay: 35000,
+        callback: spawnMegaBoss,
+        callbackScope: this,
+        loop: true
+    });
 
     this.cameras.main.flash(400, 0, 255, 255);
     showFloatingText.call(this, 240, 320, 'READY... GO!', '#00ffff');
@@ -271,12 +237,7 @@ function startGame() {
 
 function startSpawnTimer() {
     if (spawnTimer) spawnTimer.remove();
-    spawnTimer = this.time.addEvent({
-        delay: spawnDelay,
-        callback: spawnEnemy,
-        callbackScope: this,
-        loop: true
-    });
+    spawnTimer = this.time.addEvent({ delay: spawnDelay, callback: spawnEnemy, callbackScope: this, loop: true });
 }
 
 function update(time) {
@@ -286,57 +247,93 @@ function update(time) {
         togglePause.call(this);
     }
 
-    if (isPaused) return;
+    if (isPaused) {
+        laserGraphics.clear();
+        laserZone.setActive(false);
+        return;
+    }
 
     bgTile.tilePositionY -= (2 + (speedLevel - 1) * 0.5);
 
-    if (cursors.left.isDown) {
-        player.setVelocityX(-350);
-    } else if (cursors.right.isDown) {
-        player.setVelocityX(350);
-    } else if (!isDragging) {
-        player.setVelocityX(0);
+    if (megaBoss && megaBoss.active && megaBoss.y < 120) {
+        megaBoss.y += 1.5;
     }
 
-    if (isShielded) {
-        shieldSprite.setPosition(player.x, player.y);
-    }
+    if (cursors.left.isDown) { player.setVelocityX(-350); } 
+    else if (cursors.right.isDown) { player.setVelocityX(350); } 
+    else if (!isDragging) { player.setVelocityX(0); }
+
+    if (isShielded) { shieldSprite.setPosition(player.x, player.y); }
 
     const isShooting = cursors.space.isDown || (!isDesktop && (isDragging || this.input.activePointer.isDown));
     
-    if (isShooting && time > lastFired) {
-        if (weaponLevel === 1) {
-            fireBullet(player.x, player.y - 20, 0, -500);
-        } else if (weaponLevel === 2) {
-            fireBullet(player.x - 12, player.y - 20, 0, -500);
-            fireBullet(player.x + 12, player.y - 20, 0, -500);
-        } else if (weaponLevel >= 3) {
-            fireBullet(player.x, player.y - 20, 0, -500);
-            fireBullet(player.x, player.y - 20, -150, -480);
-            fireBullet(player.x, player.y - 20, 150, -480);
+    if (isShooting) {
+        if (weaponLevel >= 4) {
+            laserGraphics.clear();
+
+            const pulseWidth = 28 + Math.sin(time * 0.04) * 6;
+            const laserHeight = player.y - 20;
+
+            laserGraphics.fillStyle(0x00ffff, 0.25);
+            laserGraphics.fillRect(player.x - (pulseWidth + 12) / 2, 0, pulseWidth + 12, laserHeight);
+
+            laserGraphics.fillStyle(0x00ffff, 0.65);
+            laserGraphics.fillRect(player.x - pulseWidth / 2, 0, pulseWidth, laserHeight);
+
+            laserGraphics.fillStyle(0xffffff, 0.95);
+            laserGraphics.fillRect(player.x - 4, 0, 8, laserHeight);
+
+            const orbRadius = 12 + Math.sin(time * 0.08) * 3;
+            laserGraphics.fillStyle(0x00ffff, 0.85);
+            laserGraphics.fillCircle(player.x, player.y - 20, orbRadius + 4);
+            laserGraphics.fillStyle(0xffffff, 1.0);
+            laserGraphics.fillCircle(player.x, player.y - 20, orbRadius);
+
+            if (Math.random() < 0.3) {
+                particles.explode(1, player.x + Phaser.Math.Between(-8, 8), player.y - 20);
+            }
+
+            laserZone.setPosition(player.x, laserHeight / 2);
+            laserZone.setSize(pulseWidth, laserHeight);
+            laserZone.setActive(true);
+        } else {
+            laserGraphics.clear();
+            laserZone.setActive(false);
+
+            if (time > lastFired) {
+                if (weaponLevel === 1) {
+                    fireBullet(player.x, player.y - 20, 0, -500);
+                } else if (weaponLevel === 2) {
+                    fireBullet(player.x - 12, player.y - 20, 0, -500);
+                    fireBullet(player.x + 12, player.y - 20, 0, -500);
+                } else if (weaponLevel === 3) {
+                    fireBullet(player.x, player.y - 20, 0, -500);
+                    fireBullet(player.x, player.y - 20, -150, -480);
+                    fireBullet(player.x, player.y - 20, 150, -480);
+                }
+                lastFired = time + 120;
+            }
         }
-        lastFired = time + 120;
+    } else {
+        laserGraphics.clear();
+        laserZone.setActive(false);
     }
 
-    if (Phaser.Input.Keyboard.JustDown(keyX)) {
-        triggerUltimate.call(this);
-    }
+    if (Phaser.Input.Keyboard.JustDown(keyX)) { triggerUltimate.call(this); }
 
     items.children.each(item => {
         if (item && item.active) {
             const dist = Phaser.Math.Distance.Between(player.x, player.y, item.x, item.y);
-            if (dist < 120) {
-                this.physics.moveToObject(item, player, 320);
-            }
+            if (dist < 120) { this.physics.moveToObject(item, player, 320); }
             if (item.y > 640) item.destroy();
         }
     });
 
     bullets.children.each(b => { if (b && b.y < 0) b.destroy(); });
-    enemyBullets.children.each(eb => { if (eb && eb.y > 640) eb.destroy(); });
+    enemyBullets.children.each(eb => { if (eb && (eb.y > 640 || eb.y < -50 || eb.x < -50 || eb.x > 530)) eb.destroy(); });
     
     enemies.children.each(e => { 
-        if (e && (e.y > 640 || e.x < -100 || e.x > 580)) {
+        if (e && !e.isMegaBoss && (e.y > 640 || e.x < -100 || e.x > 580)) {
             if (e.shootTimer) e.shootTimer.remove();
             e.destroy(); 
         }
@@ -365,8 +362,103 @@ function fireBullet(x, y, vx, vy) {
     }
 }
 
+function spawnMegaBoss() {
+    if (!isGameStarted || isGameOver || isPaused || (megaBoss && megaBoss.active)) return;
+
+    enemies.children.each(enemy => {
+        if (enemy && enemy.active) {
+            if (enemy.shootTimer) enemy.shootTimer.remove();
+            createExplosion.call(this, enemy.x, enemy.y, 15, 0.8);
+            enemy.destroy();
+        }
+    });
+    enemyBullets.clear(true, true);
+
+    megaBossCount += 1;
+    const bossHp = 30 + (megaBossCount - 1) * 15;
+
+    showFloatingText.call(this, 240, 200, '🚨 MEGA BOSS #' + megaBossCount + ' 警告！ 🚨', '#ff0055');
+    this.cameras.main.shake(400, 0.015);
+
+    megaBoss = enemies.create(240, -60, 'enemy');
+    megaBoss.setScale(5.5);
+    
+    megaBoss.hp = bossHp;
+    megaBoss.maxHp = bossHp;
+    megaBoss.isMegaBoss = true;
+    megaBoss.setTint(0xff0044);
+
+    bossHpText.setText('⚠️ MEGA BOSS #' + megaBossCount + ' (' + bossHp + ' HP) ⚠️');
+    bossHpBg.setVisible(true);
+    bossHpBar.setVisible(true)
+    width = 300;
+    bossHpText.setVisible(true);
+
+    if (megaBossAttackTimer) megaBossAttackTimer.remove();
+    megaBossAttackTimer = this.time.addEvent({
+        delay: 1000,
+        callback: () => {
+            if (megaBoss && megaBoss.active && isGameStarted && !isGameOver && !isPaused) {
+                fireMegaBossBullets.call(this, megaBoss.x, megaBoss.y + 60);
+            }
+        },
+        loop: true
+    });
+}
+
+function fireMegaBossBullets(x, y) {
+    if (!player || !player.active) return;
+
+    const pattern = Phaser.Math.Between(1, 3);
+
+    if (pattern === 1) {
+        const speed = 250;
+        const angles = [-0.6, -0.3, 0, 0.3, 0.6];
+        angles.forEach(ang => {
+            const eb = enemyBullets.create(x, y, 'enemyBullet');
+            if (eb) {
+                eb.setTint(0xff0055);
+                eb.setScale(1.5);
+                eb.setVelocity(Math.sin(ang) * speed, Math.cos(ang) * speed);
+            }
+        });
+    } else if (pattern === 2) {
+        for (let i = 0; i < 3; i++) {
+            this.time.delayedCall(i * 180, () => {
+                if (megaBoss && megaBoss.active && player && player.active) {
+                    const eb = enemyBullets.create(x, y, 'enemyBullet');
+                    if (eb) {
+                        eb.setTint(0xffff00);
+                        eb.setScale(1.6);
+                        this.physics.moveToObject(eb, player, 320);
+                    }
+                }
+            });
+        }
+    } else {
+        const count = 8;
+        for (let i = 0; i < count; i++) {
+            const angle = (i / count) * Math.PI * 2;
+            const eb = enemyBullets.create(x, y, 'enemyBullet');
+            if (eb) {
+                eb.setTint(0x00ffff);
+                eb.setScale(1.3);
+                eb.setVelocity(Math.cos(angle) * 200, Math.sin(angle) * 200);
+            }
+        }
+    }
+}
+
+function updateBossHpBar() {
+    if (megaBoss && megaBoss.active) {
+        const percentage = Math.max(0, megaBoss.hp / megaBoss.maxHp);
+        bossHpBar.width = 300 * percentage;
+        bossHpText.setText('⚠️ MEGA BOSS #' + megaBossCount + ' (' + Math.ceil(megaBoss.hp) + ' HP) ⚠️');
+    }
+}
+
 function spawnEnemy() {
-    if (!isGameStarted || isGameOver || isPaused) return;
+    if (!isGameStarted || isGameOver || isPaused || (megaBoss && megaBoss.active)) return;
 
     const x = Phaser.Math.Between(40, 440);
     const enemy = enemies.create(x, -20, 'enemy');
@@ -375,12 +467,12 @@ function spawnEnemy() {
         const isBoss = Phaser.Math.Between(1, 100) <= 5;
         if (isBoss) {
             enemy.setScale(3.0);
+            enemy.body.setSize(enemy.width, enemy.height);
             enemy.hp = 5 + (speedLevel - 1);
             enemy.isBoss = true;
             enemy.setTint(0xffaa00);
             enemy.setVelocityY(80 + (speedLevel * 10));
 
-            // 👑 大敵機（Boss）：3 條彈道發射
             enemy.shootTimer = this.time.addEvent({
                 delay: 1000,
                 callback: () => {
@@ -392,14 +484,13 @@ function spawnEnemy() {
             });
 
             showFloatingText.call(this, 240, 200, '⚠️ WARNING: BOSS! ⚠️', '#ff0055');
-            this.cameras.main.shake(200, 0.01);
+            this.cameras.main.shake(150, 0.008);
         } else {
             const scale = Phaser.Math.FloatBetween(0.8, 1.5);
             enemy.setScale(scale);
             enemy.hp = 1;
             enemy.setVelocityY(baseEnemySpeed + Phaser.Math.Between(-30, 50));
 
-            // 👾 小敵機：1 條彈道發射
             enemy.shootTimer = this.time.addEvent({
                 delay: 1300,
                 callback: () => {
@@ -414,7 +505,7 @@ function spawnEnemy() {
 }
 
 function spawnSideEnemies() {
-    if (!isGameStarted || isGameOver || isPaused) return;
+    if (!isGameStarted || isGameOver || isPaused || (megaBoss && megaBoss.active)) return;
 
     showFloatingText.call(this, 240, 180, '⚠️ 兩側敵機軍團襲來！ ⚠️', '#ff5500');
 
@@ -451,12 +542,10 @@ function spawnSideEnemies() {
     }
 }
 
-// 💥 敵機發射子彈（count 1 代表小敵機1條彈道，3 代表大敵機3條彈道）
 function fireEnemyBullet(x, y, count = 1) {
     const bulletSpeed = 400 + (speedLevel * 20);
 
     if (count === 1) {
-        // 🔹 小敵機：單發彈道
         const eBullet = enemyBullets.create(x, y, 'enemyBullet');
         if (eBullet) {
             eBullet.setAngle(-90);
@@ -464,7 +553,6 @@ function fireEnemyBullet(x, y, count = 1) {
             eBullet.setTint(0xff0000);
         }
     } else if (count === 3) {
-        // 🔸 大敵機：三發彈道
         const offsets = [-36, 0, 36];
         offsets.forEach(offsetX => {
             const eBullet = enemyBullets.create(x + offsetX, y, 'enemyBullet');
@@ -489,7 +577,7 @@ function addScore(amount) {
 
     if (score >= nextBombScoreThreshold) {
         bombs += 1;
-        const bombLabel = isDesktop ? '💣 [X] 大招: ' : '💣 大招: ';
+        const bombLabel = isDesktop ? '💣 [X] 核彈: ' : '💣 核彈: ';
         bombsText.setText(bombLabel + bombs);
         nextBombScoreThreshold += 1000;
         showFloatingText.call(this, player.x, player.y - 40, '+1 BOMB!', '#ffcc00');
@@ -498,38 +586,121 @@ function addScore(amount) {
     if (score >= nextSpeedScoreThreshold) {
         speedLevel += 1;
         nextSpeedScoreThreshold += 1500;
-        
         baseEnemySpeed += 40;
         spawnDelay = Math.max(250, spawnDelay - 80);
-
         startSpawnTimer.call(this);
-
         showFloatingText.call(this, 240, 250, '⚡ SPEED UP! LV.' + speedLevel + ' ⚡', '#00ffff');
         this.cameras.main.flash(300, 0, 255, 255);
     }
 }
 
+function createExplosion(x, y, count = 25, scaleMod = 1.0) {
+    particles.explode(count, x, y);
+}
+
 function hitEnemy(bullet, enemy) {
+    console.log('hitEnemy 被呼叫了！isMegaBoss=', enemy.isMegaBoss, ' hp=', enemy.hp);  // ← 暫時加這行
     bullet.destroy();
-    enemy.hp -= 1;
-    particles.explode(8, enemy.x, enemy.y);
+    enemy.hp -= enemy.isMegaBoss ? 5 : 1;
+    particles.explode(8, bullet.x, bullet.y);
+
+    if (enemy.isMegaBoss) {
+        updateBossHpBar();
+    }
+
+    enemy.setTint(0xffffff);
+    this.time.delayedCall(60, () => {
+        if (enemy && enemy.active) {
+            enemy.setTint(enemy.isMegaBoss ? 0xff0044 : (enemy.isBoss ? 0xffaa00 : 0xffffff));
+        }
+    });
 
     if (enemy.hp <= 0) {
-        particles.explode(25, enemy.x, enemy.y);
-        this.cameras.main.shake(100, 0.005);
-        
         if (enemy.shootTimer) enemy.shootTimer.remove();
 
-        if (Phaser.Math.Between(1, 100) <= 5) {
+        if (enemy.isMegaBoss) {
+            if (megaBossAttackTimer) megaBossAttackTimer.remove();
+            
+            for (let i = 0; i < 6; i++) {
+                this.time.delayedCall(i * 100, () => {
+                    const rx = enemy.x + Phaser.Math.Between(-80, 80);
+                    const ry = enemy.y + Phaser.Math.Between(-60, 60);
+                    createExplosion.call(this, rx, ry, 40, 2.0);
+                    this.cameras.main.shake(150, 0.02);
+                });
+            }
+
+            bossHpBg.setVisible(false);
+            bossHpBar.setVisible(false);
+            bossHpText.setVisible(false);
+            addScore.call(this, 300 + megaBossCount * 50);
+            showFloatingText.call(this, 240, 240, '💥 MEGA BOSS DESTROYED! 💥', '#ffcc00');
             spawnItem.call(this, enemy.x, enemy.y);
+            megaBoss = null;
+        } else {
+            createExplosion.call(this, enemy.x, enemy.y, enemy.isBoss ? 45 : 25, enemy.isBoss ? 1.5 : 1.0);
+            this.cameras.main.shake(enemy.isBoss ? 120 : 60, enemy.isBoss ? 0.008 : 0.003);
+
+            if (Phaser.Math.Between(1, 100) <= 10) { spawnItem.call(this, enemy.x, enemy.y); }
+            addScore.call(this, enemy.isBoss ? 50 : 10);
         }
 
-        const pts = enemy.isBoss ? 50 : 10;
-        addScore.call(this, pts);
         enemy.destroy();
-    } else {
+    }
+}
+
+function hitEnemyWithLaser(zone, enemy) {
+    if (!zone.active || !enemy || !enemy.active) return;
+
+    const now = this.time.now;
+    if (!enemy.lastLaserHit || now - enemy.lastLaserHit > 45) {
+        enemy.lastLaserHit = now;
+        enemy.hp -= enemy.isMegaBoss ? 5 : 1;
+        particles.explode(5, enemy.x, enemy.y);
+
+        if (enemy.isMegaBoss) {
+            updateBossHpBar();
+        }
+
         enemy.setTint(0xffffff);
-        this.time.delayedCall(50, () => enemy.setTint(0xffaa00));
+        this.time.delayedCall(60, () => {
+            if (enemy && enemy.active) {
+                enemy.setTint(enemy.isMegaBoss ? 0xff0044 : (enemy.isBoss ? 0xffaa00 : 0xffffff));
+            }
+        });
+
+        if (enemy.hp <= 0) {
+            if (enemy.shootTimer) enemy.shootTimer.remove();
+
+            if (enemy.isMegaBoss) {
+                if (megaBossAttackTimer) megaBossAttackTimer.remove();
+
+                for (let i = 0; i < 6; i++) {
+                    this.time.delayedCall(i * 100, () => {
+                        const rx = enemy.x + Phaser.Math.Between(-80, 80);
+                        const ry = enemy.y + Phaser.Math.Between(-60, 60);
+                        createExplosion.call(this, rx, ry, 40, 2.0);
+                        this.cameras.main.shake(150, 0.02);
+                    });
+                }
+
+                bossHpBg.setVisible(false);
+                bossHpBar.setVisible(false);
+                bossHpText.setVisible(false);
+                addScore.call(this, 300 + megaBossCount * 50);
+                showFloatingText.call(this, 240, 240, '💥 MEGA BOSS DESTROYED! 💥', '#ffcc00');
+                spawnItem.call(this, enemy.x, enemy.y);
+                megaBoss = null;
+            } else {
+                createExplosion.call(this, enemy.x, enemy.y, enemy.isBoss ? 45 : 25, enemy.isBoss ? 1.5 : 1.0);
+                this.cameras.main.shake(enemy.isBoss ? 120 : 60, enemy.isBoss ? 0.008 : 0.003);
+
+                if (Phaser.Math.Between(1, 100) <= 10) { spawnItem.call(this, enemy.x, enemy.y); }
+                addScore.call(this, enemy.isBoss ? 50 : 10);
+            }
+
+            enemy.destroy();
+        }
     }
 }
 
@@ -545,21 +716,14 @@ function spawnItem(x, y) {
     if (item) {
         item.type = chosenType;
         item.setVelocityY(150);
-        this.tweens.add({
-            targets: item,
-            alpha: 0.5,
-            duration: 200,
-            yoyo: true,
-            repeat: -1
-        });
+        this.tweens.add({ targets: item, alpha: 0.5, duration: 200, yoyo: true, repeat: -1 });
     }
 }
 
 function collectItem(player, item) {
     const type = item.type;
     item.destroy();
-
-    particles.explode(20, player.x, player.y);
+    particles.explode(15, player.x, player.y);
 
     if (type === 'heal') {
         if (lives < 5) {
@@ -571,10 +735,11 @@ function collectItem(player, item) {
             showFloatingText.call(this, player.x, player.y - 30, '+100 PTS', '#ffff00');
         }
     } else if (type === 'power') {
-        if (weaponLevel < 3) {
+        if (weaponLevel < 4) {
             weaponLevel += 1;
-            weaponText.setText('⚡ 火力: LV' + (weaponLevel === 3 ? 'MAX' : weaponLevel));
-            showFloatingText.call(this, player.x, player.y - 30, 'POWER UP!', '#00ffff');
+            const lvlText = weaponLevel === 4 ? '⚡ LASER!' : ('LV' + weaponLevel);
+            weaponText.setText('⚡ 火力: ' + lvlText);
+            showFloatingText.call(this, player.x, player.y - 30, weaponLevel === 4 ? 'LASER POWER!' : 'POWER UP!', '#00ffff');
         } else {
             addScore.call(this, 200);
             showFloatingText.call(this, player.x, player.y - 30, '+200 PTS', '#ffff00');
@@ -588,9 +753,7 @@ function collectItem(player, item) {
 function activateShield() {
     isShielded = true;
     shieldSprite.setVisible(true);
-
     if (this.shieldTimer) this.shieldTimer.remove();
-
     this.shieldTimer = this.time.delayedCall(5000, () => {
         isShielded = false;
         shieldSprite.setVisible(false);
@@ -598,18 +761,9 @@ function activateShield() {
 }
 
 function showFloatingText(x, y, message, color) {
-    const txt = this.add.text(x, y, message, {
-        fontSize: '22px',
-        fill: color,
-        fontStyle: 'bold'
-    }).setOrigin(0.5);
-
+    const txt = this.add.text(x, y, message, { fontSize: '22px', fill: color, fontStyle: 'bold' }).setOrigin(0.5);
     this.tweens.add({
-        targets: txt,
-        y: y - 50,
-        alpha: 0,
-        duration: 1000,
-        onComplete: () => txt.destroy()
+        targets: txt, y: y - 50, alpha: 0, duration: 1000, onComplete: () => txt.destroy()
     });
 }
 
@@ -617,22 +771,36 @@ function triggerUltimate() {
     if (bombs <= 0 || !isGameStarted || isGameOver || isPaused) return;
 
     bombs -= 1;
-    const bombLabel = isDesktop ? '💣 [X] 大招: ' : '💣 大招: ';
+    const bombLabel = isDesktop ? '💣 [X] 核彈: ' : '💣 核彈: ';
     bombsText.setText(bombLabel + bombs);
 
     this.cameras.main.flash(350, 255, 255, 255);
-    this.cameras.main.shake(600, 0.035);
+    this.cameras.main.shake(400, 0.02);
 
     enemyBullets.clear(true, true);
 
     const activeEnemies = [...enemies.getChildren()];
     activeEnemies.forEach(enemy => {
         if (enemy && enemy.active) {
-            if (enemy.shootTimer) enemy.shootTimer.remove();
-            particles.explode(40, enemy.x, enemy.y);
-            const pts = enemy.isBoss ? 50 : 10;
-            addScore.call(this, pts);
-            enemy.destroy();
+            if (enemy.isMegaBoss) {
+                enemy.hp -= 20;
+                updateBossHpBar();
+                createExplosion.call(this, enemy.x, enemy.y, 40, 1.5);
+                if (enemy.hp <= 0) {
+                    bossHpBg.setVisible(false);
+                    bossHpBar.setVisible(false);
+                    bossHpText.setVisible(false);
+                    if (megaBossAttackTimer) megaBossAttackTimer.remove();
+                    addScore.call(this, 300 + megaBossCount * 50);
+                    megaBoss = null;
+                    enemy.destroy();
+                }
+            } else {
+                if (enemy.shootTimer) enemy.shootTimer.remove();
+                createExplosion.call(this, enemy.x, enemy.y, 25, 1.0);
+                addScore.call(this, enemy.isBoss ? 50 : 10);
+                enemy.destroy();
+            }
         }
     });
 }
@@ -643,8 +811,11 @@ function hitPlayerWithBullet(player, bullet) {
 }
 
 function hitPlayer(player, enemy) {
-    if (enemy.shootTimer) enemy.shootTimer.remove();
-    enemy.destroy();
+    if (!enemy.isMegaBoss) {
+        if (enemy.shootTimer) enemy.shootTimer.remove();
+        createExplosion.call(this, enemy.x, enemy.y, 20, 1.0);
+        enemy.destroy();
+    }
     applyDamageToPlayer.call(this);
 }
 
@@ -655,9 +826,8 @@ function applyDamageToPlayer() {
         isShielded = false;
         shieldSprite.setVisible(false);
         if (this.shieldTimer) this.shieldTimer.remove();
-        
         this.cameras.main.shake(150, 0.01);
-        particles.explode(30, player.x, player.y);
+        particles.explode(20, player.x, player.y);
         showFloatingText.call(this, player.x, player.y - 30, 'SHIELD BROKEN!', '#ff9900');
         return;
     }
@@ -667,15 +837,18 @@ function applyDamageToPlayer() {
 
     if (weaponLevel > 1) {
         weaponLevel -= 1;
-        weaponText.setText('⚡ 火力: LV' + weaponLevel);
+        const lvlText = weaponLevel === 4 ? '⚡ LASER!' : ('LV' + weaponLevel);
+        weaponText.setText('⚡ 火力: ' + lvlText);
     }
 
-    this.cameras.main.shake(250, 0.02);
+    this.cameras.main.shake(200, 0.015);
     particles.explode(30, player.x, player.y);
 
     if (lives <= 0) {
         isGameOver = true;
         this.physics.pause();
+        laserGraphics.clear();
+        laserZone.setActive(false);
         player.setTint(0xff0000);
 
         this.add.text(240, 240, 'GAME OVER', { fontSize: '40px', fill: '#ff0055', fontStyle: 'bold' }).setOrigin(0.5);
@@ -690,15 +863,8 @@ function applyDamageToPlayer() {
     } else {
         isInvulnerable = true;
         this.tweens.add({
-            targets: player,
-            alpha: 0.2,
-            duration: 100,
-            yoyo: true,
-            repeat: 7,
-            onComplete: () => {
-                player.setAlpha(1);
-                isInvulnerable = false;
-            }
+            targets: player, alpha: 0.2, duration: 100, yoyo: true, repeat: 7,
+            onComplete: () => { player.setAlpha(1); isInvulnerable = false; }
         });
     }
 }
