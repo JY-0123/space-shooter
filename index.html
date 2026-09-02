@@ -131,6 +131,7 @@ function create() {
     });
 
     player = this.physics.add.sprite(240, 520, 'ship');
+    player.setScale(1.3);
     player.setCollideWorldBounds(true);
 
     shieldSprite = this.add.sprite(player.x, player.y, 'shield_bubble');
@@ -530,7 +531,7 @@ function showUpgradeCards() {
             id: 'drone', icon: '🛸', title: '隨行護衛機', desc: '召喚一台自動攻擊的浮遊砲\n跟隨飛船並發射追蹤彈', color: 0x00ffcc, 
             apply: () => {
                 if (!drone) {
-                    drone = this.add.sprite(player.x + 40, player.y, 'dronePic').setScale(1.2);
+                    drone = this.add.sprite(player.x + 40, player.y, 'dronePic').setScale(0.8);
                 }
                 showFloatingText.call(this, player.x, player.y - 30, 'DRONE READY!', '#00ffcc');
             }
