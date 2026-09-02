@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>太空射擊遊戲 - Boss機制完全修復版</title>
+    <title>太空射擊遊戲 - 新版3選1升級</title>
     <script src="https://cdn.jsdelivr.net/npm/phaser@3/dist/phaser.min.js"></script>
     <style>
         * { box-sizing: border-box; }
@@ -50,15 +50,26 @@ let isPaused = false, pauseTextGroup;
 let isGameStarted = false, startTextGroup;
 let nextBombScoreThreshold = 1000;
 
-// ⚡ 激光雷射相關變數
-let laserGraphics, laserZone;
+// 新被動技能狀態
+let drone = null, lastDroneFired = 0; // 護衛機
+let hasExplosiveBullets = false;     // 爆破子彈
+let hasStaticAura = false, staticAuraGraphic; // 靜電感應場
+let globalSpeedMod = 1.0;            // 時空減速係數
+let magnetRadius = 120;              // 磁鐵範圍
+let critChance = 0;                  // 暴擊率 (0 ~ 1)
 
-// 👾 超級巨型 Boss 相關變數
+let playerSpeed = 350;
+
+// 👾 Mega Boss 相關變數
 let megaBoss = null;
 let bossHpBg, bossHpBar, bossHpText;
 let megaBossTimer;
 let megaBossAttackTimer = null;
 let megaBossCount = 0;
+
+// 🎴 3選1選單 UI
+let cardUpgradeGroup;
+let isSelectingCard = false;
 
 // 動態難度變數
 let speedLevel = 1;
@@ -78,6 +89,7 @@ function preload() {
     this.load.image('enemyBullet', 'assets/sprites/bullets/bullet7.png');
     this.load.image('enemy', 'assets/sprites/space-baddie.png');
     this.load.image('spark', 'assets/particles/blue.png');
+    this.load.image('dronePic', 'assets/sprites/bsquadron1.png');
     
     this.load.image('item_heal', 'assets/sprites/firstaid.png');
     this.load.image('item_power', 'assets/sprites/gem.png');
@@ -89,18 +101,26 @@ function create() {
     isDesktop = this.sys.game.device.os.desktop;
 
     score = 0; lives = 5; bombs = 3; weaponLevel = 1; isShielded = false;
+    playerSpeed = 350;
     nextBombScoreThreshold = 1000;
     speedLevel = 1; nextSpeedScoreThreshold = 1500;
     baseEnemySpeed = 250; spawnDelay = 750;
     isGameOver = false; isInvulnerable = false; isPaused = false; isGameStarted = false;
-    megaBoss = null;
-    megaBossCount = 0;
+    isSelectingCard = false;
+    megaBoss = null; megaBossCount = 0;
+
+    // 重置新能力
+    drone = null;
+    hasExplosiveBullets = false;
+    hasStaticAura = false;
+    globalSpeedMod = 1.0;
+    magnetRadius = 120;
+    critChance = 0;
 
     highScore = localStorage.getItem('space_shooter_highscore') || 0;
 
     bgTile = this.add.tileSprite(240, 320, 480, 640, 'bg');
 
-    // 🔧 修正：相容 Phaser 3.60+ 新版粒子系統寫法
     particles = this.add.particles(0, 0, 'spark', {
         speed: { min: -350, max: 350 },
         angle: { min: 0, max: 360 },
@@ -116,16 +136,12 @@ function create() {
     shieldSprite = this.add.sprite(player.x, player.y, 'shield_bubble');
     shieldSprite.setScale(1.8).setAlpha(0.7).setVisible(false);
 
+    staticAuraGraphic = this.add.graphics().setDepth(4);
+
     bullets = this.physics.add.group();
     enemyBullets = this.physics.add.group();
     enemies = this.physics.add.group();
     items = this.physics.add.group();
-
-    laserGraphics = this.add.graphics().setDepth(5);
-    laserZone = this.add.zone(0, 0, 24, 640);
-    this.physics.add.existing(laserZone);
-    laserZone.body.setAllowGravity(false);
-    laserZone.setActive(false);
 
     cursors = this.input.keyboard.createCursorKeys();
     keyX = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.X);
@@ -145,6 +161,7 @@ function create() {
 
     setupTouchControls.call(this);
 
+    // 暫停 UI
     pauseTextGroup = this.add.group();
     const pauseBg = this.add.rectangle(0, 0, 480, 640, 0x000000, 0.65).setOrigin(0, 0).setDepth(10);
     const pauseTxt = this.add.text(240, 300, 'GAME PAUSED', { fontSize: '36px', fill: '#ffcc00', fontStyle: 'bold' }).setOrigin(0.5).setDepth(10);
@@ -152,14 +169,15 @@ function create() {
     pauseTextGroup.addMultiple([pauseBg, pauseTxt, resumeTxt]);
     pauseTextGroup.setVisible(false);
 
+    // 開始畫面 UI
     startTextGroup = this.add.group();
     const startBg = this.add.rectangle(0, 0, 480, 640, 0x000000, 0.75).setOrigin(0, 0).setDepth(20);
     const titleTxt = this.add.text(240, 160, 'SPACE SHOOTER', { fontSize: '36px', fill: '#00ffff', fontStyle: 'bold' }).setOrigin(0.5).setDepth(20);
-    const subTitleTxt = this.add.text(240, 210, 'Boss修復完成版', { fontSize: '20px', fill: '#ffcc00' }).setOrigin(0.5).setDepth(20);
+    const subTitleTxt = this.add.text(240, 210, 'Boss 擊敗升級 (全新機制版)', { fontSize: '20px', fill: '#ffcc00' }).setOrigin(0.5).setDepth(20);
     
     const controlText = isDesktop ? 
-        '【 電腦版操作說明 】\n\n⬅️ ➡️ : 移動飛船\nSPACE : 發射子彈 / 激光\nX 鍵   : 釋放核彈\nP / ESC : 暫停遊戲' :
-        '【 手機版操作說明 】\n\n📱 手指控制戰鬥機（自動發射子彈/激光）\n💣 點擊右下角按鈕釋放核彈\n⏸️ 點擊右上角按鈕暫停遊戲';
+        '【 電腦版操作說明 】\n\n⬅️ ➡️ : 移動飛船\nSPACE : 發射子彈\nX 鍵   : 釋放核彈\nP / ESC : 暫停遊戲' :
+        '【 手機版操作說明 】\n\n📱 手指控制戰鬥機（自動發射子彈）\n💣 點擊右下角按鈕釋放核彈\n⏸️ 點擊右上角按鈕暫停遊戲';
 
     const controlGuide = this.add.text(240, 330, controlText, { fontSize: '16px', fill: '#cccccc', align: 'center', lineSpacing: 6 }).setOrigin(0.5).setDepth(20);
     const startBtnLabel = isDesktop ? '👉 按 [ 空白鍵 ] 或 [ 點擊螢幕 ] 開戰 👈' : '👉 [ 點擊螢幕 ] 開始戰鬥 👈';
@@ -168,23 +186,18 @@ function create() {
     this.tweens.add({ targets: startBtnTxt, alpha: 0.3, duration: 800, yoyo: true, repeat: -1 });
     startTextGroup.addMultiple([startBg, titleTxt, subTitleTxt, controlGuide, startBtnTxt]);
 
-    // 🔧 修正：監聽開始邏輯
-    const onStart = () => {
-        if (!isGameStarted) {
-            startGame.call(this);
-        }
-    };
+    const onStart = () => { if (!isGameStarted) startGame.call(this); };
     this.input.keyboard.once('keydown-SPACE', onStart);
     this.input.once('pointerdown', onStart);
 
     this.time.addEvent({ delay: 25000, callback: spawnSideEnemies, callbackScope: this, loop: true });
 
-    // 🎯 碰撞綁定
     this.physics.add.overlap(bullets, enemies, hitEnemy, null, this);
     this.physics.add.overlap(player, enemies, hitPlayer, null, this);
     this.physics.add.overlap(player, enemyBullets, hitPlayerWithBullet, null, this);
     this.physics.add.overlap(player, items, collectItem, null, this);
-    this.physics.add.overlap(laserZone, enemies, hitEnemyWithLaser, null, this);
+
+    cardUpgradeGroup = this.add.group();
 }
 
 function setupTouchControls() {
@@ -207,7 +220,7 @@ function setupTouchControls() {
     });
 
     this.input.on('pointermove', (pointer) => {
-        if (isDragging && isGameStarted && !isGameOver && !isPaused) {
+        if (isDragging && isGameStarted && !isGameOver && !isPaused && !isSelectingCard) {
             if (!isDesktop) {
                 player.x = Phaser.Math.Clamp(pointer.x, 20, 460);
                 player.y = Phaser.Math.Clamp(pointer.y - 30, 40, 600);
@@ -240,18 +253,14 @@ function startSpawnTimer() {
     spawnTimer = this.time.addEvent({ delay: spawnDelay, callback: spawnEnemy, callbackScope: this, loop: true });
 }
 
-function update(time) {
+function update(time, delta) {
     if (!isGameStarted || isGameOver) return;
 
     if (Phaser.Input.Keyboard.JustDown(keyP) || Phaser.Input.Keyboard.JustDown(keyEsc)) {
         togglePause.call(this);
     }
 
-    if (isPaused) {
-        laserGraphics.clear();
-        laserZone.setActive(false);
-        return;
-    }
+    if (isPaused || isSelectingCard) return;
 
     bgTile.tilePositionY -= (2 + (speedLevel - 1) * 0.5);
 
@@ -259,72 +268,88 @@ function update(time) {
         megaBoss.y += 1.5;
     }
 
-    if (cursors.left.isDown) { player.setVelocityX(-350); } 
-    else if (cursors.right.isDown) { player.setVelocityX(350); } 
+    if (cursors.left.isDown) { player.setVelocityX(-playerSpeed); } 
+    else if (cursors.right.isDown) { player.setVelocityX(playerSpeed); } 
     else if (!isDragging) { player.setVelocityX(0); }
 
     if (isShielded) { shieldSprite.setPosition(player.x, player.y); }
 
-    const isShooting = cursors.space.isDown || (!isDesktop && (isDragging || this.input.activePointer.isDown));
-    
-    if (isShooting) {
-        if (weaponLevel >= 4) {
-            laserGraphics.clear();
+    // 🛸 護衛機跟隨與射擊 logic
+    if (drone && drone.active) {
+        drone.x = Phaser.Math.Linear(drone.x, player.x + 45, 0.1);
+        drone.y = Phaser.Math.Linear(drone.y, player.y + 10, 0.1);
 
-            const pulseWidth = 28 + Math.sin(time * 0.04) * 6;
-            const laserHeight = player.y - 20;
-
-            laserGraphics.fillStyle(0x00ffff, 0.25);
-            laserGraphics.fillRect(player.x - (pulseWidth + 12) / 2, 0, pulseWidth + 12, laserHeight);
-
-            laserGraphics.fillStyle(0x00ffff, 0.65);
-            laserGraphics.fillRect(player.x - pulseWidth / 2, 0, pulseWidth, laserHeight);
-
-            laserGraphics.fillStyle(0xffffff, 0.95);
-            laserGraphics.fillRect(player.x - 4, 0, 8, laserHeight);
-
-            const orbRadius = 12 + Math.sin(time * 0.08) * 3;
-            laserGraphics.fillStyle(0x00ffff, 0.85);
-            laserGraphics.fillCircle(player.x, player.y - 20, orbRadius + 4);
-            laserGraphics.fillStyle(0xffffff, 1.0);
-            laserGraphics.fillCircle(player.x, player.y - 20, orbRadius);
-
-            if (Math.random() < 0.3) {
-                particles.explode(1, player.x + Phaser.Math.Between(-8, 8), player.y - 20);
+        if (time > lastDroneFired) {
+            let target = enemies.getFirstAlive();
+            let vx = 0, vy = -450;
+            if (target) {
+                const angle = Phaser.Math.Angle.Between(drone.x, drone.y, target.x, target.y);
+                vx = Math.cos(angle) * 450;
+                vy = Math.sin(angle) * 450;
             }
-
-            laserZone.setPosition(player.x, laserHeight / 2);
-            laserZone.setSize(pulseWidth, laserHeight);
-            laserZone.setActive(true);
-        } else {
-            laserGraphics.clear();
-            laserZone.setActive(false);
-
-            if (time > lastFired) {
-                if (weaponLevel === 1) {
-                    fireBullet(player.x, player.y - 20, 0, -500);
-                } else if (weaponLevel === 2) {
-                    fireBullet(player.x - 12, player.y - 20, 0, -500);
-                    fireBullet(player.x + 12, player.y - 20, 0, -500);
-                } else if (weaponLevel === 3) {
-                    fireBullet(player.x, player.y - 20, 0, -500);
-                    fireBullet(player.x, player.y - 20, -150, -480);
-                    fireBullet(player.x, player.y - 20, 150, -480);
-                }
-                lastFired = time + 120;
-            }
+            fireBullet(drone.x, drone.y - 10, vx, vy, false);
+            lastDroneFired = time + 250;
         }
-    } else {
-        laserGraphics.clear();
-        laserZone.setActive(false);
+    }
+
+    // ⚡ 靜電感應場效果
+    if (hasStaticAura) {
+        staticAuraGraphic.clear();
+        staticAuraGraphic.lineStyle(2, 0x00ffff, 0.6);
+        staticAuraGraphic.strokeCircle(player.x, player.y, 90);
+
+        enemies.children.each(e => {
+            if (e && e.active) {
+                const d = Phaser.Math.Distance.Between(player.x, player.y, e.x, e.y);
+                if (d < 90) {
+                    e.hp -= 0.08;
+                    particles.explode(1, e.x, e.y);
+                    if (e.isMegaBoss) updateBossHpBar();
+                    if (e.hp <= 0) {
+                        if (e.isMegaBoss) handleMegaBossDefeated.call(this);
+                        else {
+                            createExplosion.call(this, e.x, e.y, 20);
+                            addScore.call(this, 10);
+                            e.destroy();
+                        }
+                    }
+                }
+            }
+        });
+
+        enemyBullets.children.each(eb => {
+            if (eb && eb.active) {
+                if (Phaser.Math.Distance.Between(player.x, player.y, eb.x, eb.y) < 90) {
+                    particles.explode(4, eb.x, eb.y);
+                    eb.destroy();
+                }
+            }
+        });
+    }
+
+    // 射擊邏輯
+    const isShooting = cursors.space.isDown || (!isDesktop && (isDragging || this.input.activePointer.isDown));
+    if (isShooting && time > lastFired) {
+        if (weaponLevel === 1) {
+            fireBullet(player.x, player.y - 20, 0, -500);
+        } else if (weaponLevel === 2) {
+            fireBullet(player.x - 12, player.y - 20, 0, -500);
+            fireBullet(player.x + 12, player.y - 20, 0, -500);
+        } else if (weaponLevel >= 3) {
+            fireBullet(player.x, player.y - 20, 0, -500);
+            fireBullet(player.x, player.y - 20, -150, -480);
+            fireBullet(player.x, player.y - 20, 150, -480);
+        }
+        lastFired = time + 120;
     }
 
     if (Phaser.Input.Keyboard.JustDown(keyX)) { triggerUltimate.call(this); }
 
+    // 🧲 超能磁鐵掉落物吸引邏輯
     items.children.each(item => {
         if (item && item.active) {
             const dist = Phaser.Math.Distance.Between(player.x, player.y, item.x, item.y);
-            if (dist < 120) { this.physics.moveToObject(item, player, 320); }
+            if (dist < magnetRadius) { this.physics.moveToObject(item, player, 380); }
             if (item.y > 640) item.destroy();
         }
     });
@@ -341,7 +366,7 @@ function update(time) {
 }
 
 function togglePause() {
-    if (!isGameStarted || isGameOver) return;
+    if (!isGameStarted || isGameOver || isSelectingCard) return;
     isPaused = !isPaused;
     if (isPaused) {
         this.physics.pause();
@@ -354,16 +379,26 @@ function togglePause() {
     }
 }
 
-function fireBullet(x, y, vx, vy) {
+function fireBullet(x, y, vx, vy, isPlayerMain = true) {
     const bullet = bullets.create(x, y, 'bullet');
     if (bullet) {
         bullet.setVelocity(vx, vy);
         bullet.setRotation(Math.atan2(vy, vx));
+        
+        // 🎯 暴擊算牌
+        let isCrit = isPlayerMain && Math.random() < critChance;
+        bullet.damage = isCrit ? 3 : 1;
+        bullet.isExplosive = hasExplosiveBullets;
+
+        if (isCrit) {
+            bullet.setTint(0xff00ff);
+            bullet.setScale(1.4);
+        }
     }
 }
 
 function spawnMegaBoss() {
-    if (!isGameStarted || isGameOver || isPaused || (megaBoss && megaBoss.active)) return;
+    if (!isGameStarted || isGameOver || isPaused || isSelectingCard || (megaBoss && megaBoss.active)) return;
 
     enemies.children.each(enemy => {
         if (enemy && enemy.active) {
@@ -375,14 +410,13 @@ function spawnMegaBoss() {
     enemyBullets.clear(true, true);
 
     megaBossCount += 1;
-    const bossHp = 30 + (megaBossCount - 1) * 15;
+    const bossHp = 40 + (megaBossCount - 1) * 20;
 
     showFloatingText.call(this, 240, 200, '🚨 MEGA BOSS #' + megaBossCount + ' 警告！ 🚨', '#ff0055');
     this.cameras.main.shake(400, 0.015);
 
     megaBoss = enemies.create(240, -60, 'enemy');
     megaBoss.setScale(5.5);
-    
     megaBoss.hp = bossHp;
     megaBoss.maxHp = bossHp;
     megaBoss.isMegaBoss = true;
@@ -390,15 +424,14 @@ function spawnMegaBoss() {
 
     bossHpText.setText('⚠️ MEGA BOSS #' + megaBossCount + ' (' + bossHp + ' HP) ⚠️');
     bossHpBg.setVisible(true);
-    bossHpBar.setVisible(true)
-    width = 300;
+    bossHpBar.setVisible(true);
     bossHpText.setVisible(true);
 
     if (megaBossAttackTimer) megaBossAttackTimer.remove();
     megaBossAttackTimer = this.time.addEvent({
         delay: 1000,
         callback: () => {
-            if (megaBoss && megaBoss.active && isGameStarted && !isGameOver && !isPaused) {
+            if (megaBoss && megaBoss.active && isGameStarted && !isGameOver && !isPaused && !isSelectingCard) {
                 fireMegaBossBullets.call(this, megaBoss.x, megaBoss.y + 60);
             }
         },
@@ -408,29 +441,26 @@ function spawnMegaBoss() {
 
 function fireMegaBossBullets(x, y) {
     if (!player || !player.active) return;
-
+    const speed = 250 * globalSpeedMod; // 套用減速
     const pattern = Phaser.Math.Between(1, 3);
 
     if (pattern === 1) {
-        const speed = 250;
         const angles = [-0.6, -0.3, 0, 0.3, 0.6];
         angles.forEach(ang => {
             const eb = enemyBullets.create(x, y, 'enemyBullet');
             if (eb) {
-                eb.setTint(0xff0055);
-                eb.setScale(1.5);
+                eb.setTint(0xff0055); eb.setScale(1.5);
                 eb.setVelocity(Math.sin(ang) * speed, Math.cos(ang) * speed);
             }
         });
     } else if (pattern === 2) {
         for (let i = 0; i < 3; i++) {
             this.time.delayedCall(i * 180, () => {
-                if (megaBoss && megaBoss.active && player && player.active) {
+                if (megaBoss && megaBoss.active && player && player.active && !isSelectingCard) {
                     const eb = enemyBullets.create(x, y, 'enemyBullet');
                     if (eb) {
-                        eb.setTint(0xffff00);
-                        eb.setScale(1.6);
-                        this.physics.moveToObject(eb, player, 320);
+                        eb.setTint(0xffff00); eb.setScale(1.6);
+                        this.physics.moveToObject(eb, player, 320 * globalSpeedMod);
                     }
                 }
             });
@@ -441,9 +471,8 @@ function fireMegaBossBullets(x, y) {
             const angle = (i / count) * Math.PI * 2;
             const eb = enemyBullets.create(x, y, 'enemyBullet');
             if (eb) {
-                eb.setTint(0x00ffff);
-                eb.setScale(1.3);
-                eb.setVelocity(Math.cos(angle) * 200, Math.sin(angle) * 200);
+                eb.setTint(0x00ffff); eb.setScale(1.3);
+                eb.setVelocity(Math.cos(angle) * (200 * globalSpeedMod), Math.sin(angle) * (200 * globalSpeedMod));
             }
         }
     }
@@ -457,8 +486,142 @@ function updateBossHpBar() {
     }
 }
 
+function handleMegaBossDefeated() {
+    if (megaBossAttackTimer) megaBossAttackTimer.remove();
+
+    for (let i = 0; i < 6; i++) {
+        this.time.delayedCall(i * 100, () => {
+            const rx = megaBoss.x + Phaser.Math.Between(-80, 80);
+            const ry = megaBoss.y + Phaser.Math.Between(-60, 60);
+            createExplosion.call(this, rx, ry, 40, 2.0);
+            this.cameras.main.shake(150, 0.02);
+        });
+    }
+
+    bossHpBg.setVisible(false);
+    bossHpBar.setVisible(false);
+    bossHpText.setVisible(false);
+    addScore.call(this, 300 + megaBossCount * 50);
+    megaBoss.destroy();
+    megaBoss = null;
+
+    this.time.delayedCall(700, () => {
+        showUpgradeCards.call(this);
+    });
+}
+
+// 🎴【全新卡牌池升級介面】
+function showUpgradeCards() {
+    isSelectingCard = true;
+    this.physics.pause();
+    this.tweens.pauseAll();
+
+    cardUpgradeGroup.clear(true, true);
+
+    const overlay = this.add.rectangle(0, 0, 480, 640, 0x000000, 0.85).setOrigin(0, 0).setDepth(30);
+    const title = this.add.text(240, 90, '🎉 戰術晶片模組升級 🎉', { fontSize: '26px', fill: '#00ffff', fontStyle: 'bold' }).setOrigin(0.5).setDepth(30);
+    const subTitle = this.add.text(240, 125, '擊敗強敵！請選擇一項核心戰術強化', { fontSize: '15px', fill: '#cccccc' }).setOrigin(0.5).setDepth(30);
+    
+    cardUpgradeGroup.addMultiple([overlay, title, subTitle]);
+
+    // 🌟 全新 6 種特色卡牌池
+    const allCards = [
+        { 
+            id: 'drone', icon: '🛸', title: '隨行護衛機', desc: '召喚一台自動攻擊的浮遊砲\n跟隨飛船並發射追蹤彈', color: 0x00ffcc, 
+            apply: () => {
+                if (!drone) {
+                    drone = this.add.sprite(player.x + 40, player.y, 'dronePic').setScale(1.2);
+                }
+                showFloatingText.call(this, player.x, player.y - 30, 'DRONE READY!', '#00ffcc');
+            }
+        },
+        { 
+            id: 'explosive', icon: '💥', title: '連環爆破彈', desc: '子彈擊中敵人時\n觸發小範圍二次火光爆炸', color: 0xff6600, 
+            apply: () => {
+                hasExplosiveBullets = true;
+                showFloatingText.call(this, player.x, player.y - 30, 'EXPLOSIVE ROUNDS!', '#ff6600');
+            }
+        },
+        { 
+            id: 'aura', icon: '⚡', title: '靜電感應場', desc: '在戰機四周產生電場\n自動微幅摧毀靠近敵機與子彈', color: 0x00ffff, 
+            apply: () => {
+                hasStaticAura = true;
+                showFloatingText.call(this, player.x, player.y - 30, 'STATIC AURA!', '#00ffff');
+            }
+        },
+        { 
+            id: 'slow', icon: '⏳', title: '時空減速', desc: '永久使所有敵人的移動與\n彈幕發射速度下降 35%', color: 0xaa00ff, 
+            apply: () => {
+                globalSpeedMod *= 0.65;
+                showFloatingText.call(this, player.x, player.y - 30, 'TIME SLOW 35%!', '#aa00ff');
+            }
+        },
+        { 
+            id: 'magnet', icon: '🧲', title: '超能磁鐵', desc: '強化吸附氣場\n大幅增加掉落物道具吸引距離', color: 0xffcc00, 
+            apply: () => {
+                magnetRadius += 300;
+                showFloatingText.call(this, player.x, player.y - 30, 'SUPER MAGNET!', '#ffcc00');
+            }
+        },
+        { 
+            id: 'crit', icon: '🎯', title: '弱點透視', desc: '子彈獲得 +30% 暴擊率\n暴擊時造成 3 倍傷害', color: 0xff0066, 
+            apply: () => {
+                critChance += 0.3;
+                showFloatingText.call(this, player.x, player.y - 30, 'CRIT CHANCE UP!', '#ff0066');
+            }
+        }
+    ];
+
+    // 隨機抽選 3 張不重複卡牌
+    const selectedCards = Phaser.Utils.Array.Shuffle([...allCards]).slice(0, 3);
+
+    selectedCards.forEach((card, index) => {
+        const cardY = 200 + (index * 130);
+
+        const cardBg = this.add.rectangle(240, cardY, 380, 110, 0x111122, 0.95)
+            .setStrokeStyle(3, card.color)
+            .setInteractive({ useHandCursor: true })
+            .setDepth(31);
+
+        const iconText = this.add.text(80, cardY, card.icon, { fontSize: '42px' }).setOrigin(0.5).setDepth(32);
+        const nameText = this.add.text(140, cardY - 22, card.title, { fontSize: '20px', fill: '#ffffff', fontStyle: 'bold' }).setDepth(32);
+        const descText = this.add.text(140, cardY + 8, card.desc, { fontSize: '13px', fill: '#aaaaaa' }).setDepth(32);
+
+        cardUpgradeGroup.addMultiple([cardBg, iconText, nameText, descText]);
+
+        cardBg.on('pointerover', () => {
+            cardBg.setFillStyle(0x222244, 1.0);
+            cardBg.setScale(1.03);
+        });
+        cardBg.on('pointerout', () => {
+            cardBg.setFillStyle(0x111122, 0.95);
+            cardBg.setScale(1.0);
+        });
+
+        cardBg.on('pointerdown', () => {
+            card.apply();
+            cardUpgradeGroup.clear(true, true);
+            isSelectingCard = false;
+
+            this.physics.resume();
+            this.tweens.resumeAll();
+            this.cameras.main.flash(300, 0, 255, 255);
+
+            // 🛡️ 選完技能後給 1.5 秒無敵，避免復活瞬間被彈幕淹沒
+            isInvulnerable = true;
+            this.tweens.add({
+                targets: player, alpha: 0.3, duration: 150, yoyo: true, repeat: 4,
+                onComplete: () => {
+                    player.setAlpha(1);
+                    isInvulnerable = false;
+                }
+            });
+        });
+    });
+}
+
 function spawnEnemy() {
-    if (!isGameStarted || isGameOver || isPaused || (megaBoss && megaBoss.active)) return;
+    if (!isGameStarted || isGameOver || isPaused || isSelectingCard || (megaBoss && megaBoss.active)) return;
 
     const x = Phaser.Math.Between(40, 440);
     const enemy = enemies.create(x, -20, 'enemy');
@@ -468,15 +631,15 @@ function spawnEnemy() {
         if (isBoss) {
             enemy.setScale(3.0);
             enemy.body.setSize(enemy.width, enemy.height);
-            enemy.hp = 5 + (speedLevel - 1);
+            enemy.hp = 8 + (speedLevel - 1) * 2;
             enemy.isBoss = true;
             enemy.setTint(0xffaa00);
-            enemy.setVelocityY(80 + (speedLevel * 10));
+            enemy.setVelocityY((80 + (speedLevel * 10)) * globalSpeedMod);
 
             enemy.shootTimer = this.time.addEvent({
                 delay: 1000,
                 callback: () => {
-                    if (enemy && enemy.active && isGameStarted && !isGameOver && !isPaused) {
+                    if (enemy && enemy.active && isGameStarted && !isGameOver && !isPaused && !isSelectingCard) {
                         fireEnemyBullet.call(this, enemy.x, enemy.y + 40, 3);
                     }
                 },
@@ -489,12 +652,12 @@ function spawnEnemy() {
             const scale = Phaser.Math.FloatBetween(0.8, 1.5);
             enemy.setScale(scale);
             enemy.hp = 1;
-            enemy.setVelocityY(baseEnemySpeed + Phaser.Math.Between(-30, 50));
+            enemy.setVelocityY((baseEnemySpeed + Phaser.Math.Between(-30, 50)) * globalSpeedMod);
 
             enemy.shootTimer = this.time.addEvent({
                 delay: 1300,
                 callback: () => {
-                    if (enemy && enemy.active && isGameStarted && !isGameOver && !isPaused) {
+                    if (enemy && enemy.active && isGameStarted && !isGameOver && !isPaused && !isSelectingCard) {
                         fireEnemyBullet.call(this, enemy.x, enemy.y + 15, 1);
                     }
                 },
@@ -505,7 +668,7 @@ function spawnEnemy() {
 }
 
 function spawnSideEnemies() {
-    if (!isGameStarted || isGameOver || isPaused || (megaBoss && megaBoss.active)) return;
+    if (!isGameStarted || isGameOver || isPaused || isSelectingCard || (megaBoss && megaBoss.active)) return;
 
     showFloatingText.call(this, 240, 180, '⚠️ 兩側敵機軍團襲來！ ⚠️', '#ff5500');
 
@@ -515,7 +678,7 @@ function spawnSideEnemies() {
         enemy.shootTimer = this.time.addEvent({
             delay: 1200,
             callback: () => {
-                if (enemy && enemy.active && isGameStarted && !isGameOver && !isPaused) {
+                if (enemy && enemy.active && isGameStarted && !isGameOver && !isPaused && !isSelectingCard) {
                     fireEnemyBullet.call(this, enemy.x, enemy.y + 15, 1);
                 }
             },
@@ -526,24 +689,20 @@ function spawnSideEnemies() {
     for (let i = 0; i < 5; i++) {
         const leftEnemy = enemies.create(-30 - (i * 35), basePosY + (i * 25), 'enemy');
         if (leftEnemy) {
-            leftEnemy.setScale(1.1);
-            leftEnemy.hp = 2;
-            leftEnemy.setVelocity(180, 70);
+            leftEnemy.setScale(1.1); leftEnemy.hp = 2; leftEnemy.setVelocity(180 * globalSpeedMod, 70 * globalSpeedMod);
             setupSideShootTimer.call(this, leftEnemy);
         }
 
         const rightEnemy = enemies.create(510 + (i * 35), basePosY + (i * 25), 'enemy');
         if (rightEnemy) {
-            rightEnemy.setScale(1.1);
-            rightEnemy.hp = 2;
-            rightEnemy.setVelocity(-180, 70);
+            rightEnemy.setScale(1.1); rightEnemy.hp = 2; rightEnemy.setVelocity(-180 * globalSpeedMod, 70 * globalSpeedMod);
             setupSideShootTimer.call(this, rightEnemy);
         }
     }
 }
 
 function fireEnemyBullet(x, y, count = 1) {
-    const bulletSpeed = 400 + (speedLevel * 20);
+    const bulletSpeed = (400 + (speedLevel * 20)) * globalSpeedMod;
 
     if (count === 1) {
         const eBullet = enemyBullets.create(x, y, 'enemyBullet');
@@ -599,14 +758,35 @@ function createExplosion(x, y, count = 25, scaleMod = 1.0) {
 }
 
 function hitEnemy(bullet, enemy) {
-    console.log('hitEnemy 被呼叫了！isMegaBoss=', enemy.isMegaBoss, ' hp=', enemy.hp);  // ← 暫時加這行
-    bullet.destroy();
-    enemy.hp -= enemy.isMegaBoss ? 5 : 1;
-    particles.explode(8, bullet.x, bullet.y);
+    const dmg = bullet.damage || 1;
+    const isExplosive = bullet.isExplosive;
 
-    if (enemy.isMegaBoss) {
-        updateBossHpBar();
+    bullet.destroy();
+    enemy.hp -= dmg;
+    particles.explode(dmg > 1 ? 15 : 8, bullet.x, bullet.y);
+
+    if (dmg > 1) {
+        showFloatingText.call(this, enemy.x, enemy.y - 20, 'CRIT!', '#ff00ff');
     }
+
+    // 💥 爆破子彈觸發範圍傷害
+    if (isExplosive) {
+        createExplosion.call(this, enemy.x, enemy.y, 12, 0.6);
+        enemies.children.each(e => {
+            if (e && e.active && e !== enemy) {
+                if (Phaser.Math.Distance.Between(enemy.x, enemy.y, e.x, e.y) < 60) {
+                    e.hp -= 1;
+                    if (e.hp <= 0 && !e.isMegaBoss) {
+                        createExplosion.call(this, e.x, e.y, 15);
+                        addScore.call(this, 10);
+                        e.destroy();
+                    }
+                }
+            }
+        });
+    }
+
+    if (enemy.isMegaBoss) updateBossHpBar();
 
     enemy.setTint(0xffffff);
     this.time.delayedCall(60, () => {
@@ -619,86 +799,13 @@ function hitEnemy(bullet, enemy) {
         if (enemy.shootTimer) enemy.shootTimer.remove();
 
         if (enemy.isMegaBoss) {
-            if (megaBossAttackTimer) megaBossAttackTimer.remove();
-            
-            for (let i = 0; i < 6; i++) {
-                this.time.delayedCall(i * 100, () => {
-                    const rx = enemy.x + Phaser.Math.Between(-80, 80);
-                    const ry = enemy.y + Phaser.Math.Between(-60, 60);
-                    createExplosion.call(this, rx, ry, 40, 2.0);
-                    this.cameras.main.shake(150, 0.02);
-                });
-            }
-
-            bossHpBg.setVisible(false);
-            bossHpBar.setVisible(false);
-            bossHpText.setVisible(false);
-            addScore.call(this, 300 + megaBossCount * 50);
-            showFloatingText.call(this, 240, 240, '💥 MEGA BOSS DESTROYED! 💥', '#ffcc00');
-            spawnItem.call(this, enemy.x, enemy.y);
-            megaBoss = null;
+            handleMegaBossDefeated.call(this);
         } else {
             createExplosion.call(this, enemy.x, enemy.y, enemy.isBoss ? 45 : 25, enemy.isBoss ? 1.5 : 1.0);
             this.cameras.main.shake(enemy.isBoss ? 120 : 60, enemy.isBoss ? 0.008 : 0.003);
 
             if (Phaser.Math.Between(1, 100) <= 10) { spawnItem.call(this, enemy.x, enemy.y); }
             addScore.call(this, enemy.isBoss ? 50 : 10);
-        }
-
-        enemy.destroy();
-    }
-}
-
-function hitEnemyWithLaser(zone, enemy) {
-    if (!zone.active || !enemy || !enemy.active) return;
-
-    const now = this.time.now;
-    if (!enemy.lastLaserHit || now - enemy.lastLaserHit > 45) {
-        enemy.lastLaserHit = now;
-        enemy.hp -= enemy.isMegaBoss ? 5 : 1;
-        particles.explode(5, enemy.x, enemy.y);
-
-        if (enemy.isMegaBoss) {
-            updateBossHpBar();
-        }
-
-        enemy.setTint(0xffffff);
-        this.time.delayedCall(60, () => {
-            if (enemy && enemy.active) {
-                enemy.setTint(enemy.isMegaBoss ? 0xff0044 : (enemy.isBoss ? 0xffaa00 : 0xffffff));
-            }
-        });
-
-        if (enemy.hp <= 0) {
-            if (enemy.shootTimer) enemy.shootTimer.remove();
-
-            if (enemy.isMegaBoss) {
-                if (megaBossAttackTimer) megaBossAttackTimer.remove();
-
-                for (let i = 0; i < 6; i++) {
-                    this.time.delayedCall(i * 100, () => {
-                        const rx = enemy.x + Phaser.Math.Between(-80, 80);
-                        const ry = enemy.y + Phaser.Math.Between(-60, 60);
-                        createExplosion.call(this, rx, ry, 40, 2.0);
-                        this.cameras.main.shake(150, 0.02);
-                    });
-                }
-
-                bossHpBg.setVisible(false);
-                bossHpBar.setVisible(false);
-                bossHpText.setVisible(false);
-                addScore.call(this, 300 + megaBossCount * 50);
-                showFloatingText.call(this, 240, 240, '💥 MEGA BOSS DESTROYED! 💥', '#ffcc00');
-                spawnItem.call(this, enemy.x, enemy.y);
-                megaBoss = null;
-            } else {
-                createExplosion.call(this, enemy.x, enemy.y, enemy.isBoss ? 45 : 25, enemy.isBoss ? 1.5 : 1.0);
-                this.cameras.main.shake(enemy.isBoss ? 120 : 60, enemy.isBoss ? 0.008 : 0.003);
-
-                if (Phaser.Math.Between(1, 100) <= 10) { spawnItem.call(this, enemy.x, enemy.y); }
-                addScore.call(this, enemy.isBoss ? 50 : 10);
-            }
-
             enemy.destroy();
         }
     }
@@ -735,11 +842,10 @@ function collectItem(player, item) {
             showFloatingText.call(this, player.x, player.y - 30, '+100 PTS', '#ffff00');
         }
     } else if (type === 'power') {
-        if (weaponLevel < 4) {
+        if (weaponLevel < 3) {
             weaponLevel += 1;
-            const lvlText = weaponLevel === 4 ? '⚡ LASER!' : ('LV' + weaponLevel);
-            weaponText.setText('⚡ 火力: ' + lvlText);
-            showFloatingText.call(this, player.x, player.y - 30, weaponLevel === 4 ? 'LASER POWER!' : 'POWER UP!', '#00ffff');
+            weaponText.setText('⚡ 火力: LV' + weaponLevel);
+            showFloatingText.call(this, player.x, player.y - 30, 'POWER UP!', '#00ffff');
         } else {
             addScore.call(this, 200);
             showFloatingText.call(this, player.x, player.y - 30, '+200 PTS', '#ffff00');
@@ -768,7 +874,7 @@ function showFloatingText(x, y, message, color) {
 }
 
 function triggerUltimate() {
-    if (bombs <= 0 || !isGameStarted || isGameOver || isPaused) return;
+    if (bombs <= 0 || !isGameStarted || isGameOver || isPaused || isSelectingCard) return;
 
     bombs -= 1;
     const bombLabel = isDesktop ? '💣 [X] 核彈: ' : '💣 核彈: ';
@@ -787,13 +893,7 @@ function triggerUltimate() {
                 updateBossHpBar();
                 createExplosion.call(this, enemy.x, enemy.y, 40, 1.5);
                 if (enemy.hp <= 0) {
-                    bossHpBg.setVisible(false);
-                    bossHpBar.setVisible(false);
-                    bossHpText.setVisible(false);
-                    if (megaBossAttackTimer) megaBossAttackTimer.remove();
-                    addScore.call(this, 300 + megaBossCount * 50);
-                    megaBoss = null;
-                    enemy.destroy();
+                    handleMegaBossDefeated.call(this);
                 }
             } else {
                 if (enemy.shootTimer) enemy.shootTimer.remove();
@@ -820,7 +920,7 @@ function hitPlayer(player, enemy) {
 }
 
 function applyDamageToPlayer() {
-    if (!isGameStarted || isGameOver || isInvulnerable || isPaused) return;
+    if (!isGameStarted || isGameOver || isInvulnerable || isPaused || isSelectingCard) return;
 
     if (isShielded) {
         isShielded = false;
@@ -837,8 +937,7 @@ function applyDamageToPlayer() {
 
     if (weaponLevel > 1) {
         weaponLevel -= 1;
-        const lvlText = weaponLevel === 4 ? '⚡ LASER!' : ('LV' + weaponLevel);
-        weaponText.setText('⚡ 火力: ' + lvlText);
+        weaponText.setText('⚡ 火力: LV' + weaponLevel);
     }
 
     this.cameras.main.shake(200, 0.015);
@@ -847,8 +946,6 @@ function applyDamageToPlayer() {
     if (lives <= 0) {
         isGameOver = true;
         this.physics.pause();
-        laserGraphics.clear();
-        laserZone.setActive(false);
         player.setTint(0xff0000);
 
         this.add.text(240, 240, 'GAME OVER', { fontSize: '40px', fill: '#ff0055', fontStyle: 'bold' }).setOrigin(0.5);
