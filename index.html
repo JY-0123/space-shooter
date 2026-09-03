@@ -58,6 +58,8 @@ let globalSpeedMod = 1.0;            // 時空減速係數
 let magnetRadius = 120;              // 磁鐵範圍
 let critChance = 0;                  // 暴擊率 (0 ~ 1)
 
+let lastMirrorFired = 0;   // 分身彈幕獨立冷卻
+
 // ⚡ 雷射相關變數
 let laserGraphics, laserZone;
 
@@ -115,6 +117,7 @@ function create() {
     // 重置新能力
     drone = null;
     mirrorShotLevel = 0;
+    lastMirrorFired = 0;
     hasStaticAura = false;
     globalSpeedMod = 1.0;
     magnetRadius = 120;
@@ -390,8 +393,8 @@ if (isShooting && weaponLevel >= 4) {
     }
 }
 
-// 分身彈幕:兩側額外高角度子彈（不受主武器等級影響，獨立運作）
-if (isShooting && time > lastFired - 120) {
+// 分身彈幕:兩側額外高角度子彈（獨立冷卻計時，不受主武器影響）
+if (isShooting && time > lastMirrorFired) {
     if (mirrorShotLevel >= 1) {
         fireBullet(player.x - 25, player.y - 5, -220, -460);
         fireBullet(player.x + 25, player.y - 5, 220, -460);
@@ -408,6 +411,7 @@ if (isShooting && time > lastFired - 120) {
         fireHomingBullet(player.x - 15, player.y - 10);
         fireHomingBullet(player.x + 15, player.y - 10);
     }
+    lastMirrorFired = time + 120;
 }
 
     if (Phaser.Input.Keyboard.JustDown(keyX)) { triggerUltimate.call(this); }
