@@ -52,11 +52,14 @@ let nextBombScoreThreshold = 1000;
 
 // 新被動技能狀態
 let drone = null, lastDroneFired = 0; // 護衛機
-let hasExplosiveBullets = false;     // 爆破子彈
+let mirrorShotLevel = 0;           // 分身彈幕(可疊加)
 let hasStaticAura = false, staticAuraGraphic; // 靜電感應場
 let globalSpeedMod = 1.0;            // 時空減速係數
 let magnetRadius = 120;              // 磁鐵範圍
 let critChance = 0;                  // 暴擊率 (0 ~ 1)
+
+// ⚡ 雷射相關變數
+let laserGraphics, laserZone;
 
 let playerSpeed = 350;
 
@@ -111,7 +114,7 @@ function create() {
 
     // 重置新能力
     drone = null;
-    hasExplosiveBullets = false;
+    mirrorShotLevel = 0;
     hasStaticAura = false;
     globalSpeedMod = 1.0;
     magnetRadius = 120;
@@ -144,10 +147,19 @@ function create() {
     enemies = this.physics.add.group();
     items = this.physics.add.group();
 
+    // ⚡ 雷射初始化
+    laserGraphics = this.add.graphics().setDepth(5);
+    laserZone = this.add.zone(0, 0, 24, 640);
+    this.physics.add.existing(laserZone);
+    laserZone.body.setAllowGravity(false);
+    laserZone.setActive(false);
+
     cursors = this.input.keyboard.createCursorKeys();
     keyX = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.X);
     keyP = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.P);
     keyEsc = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.ESC);
+
+    this.input.keyboard.addCapture(Phaser.Input.Keyboard.KeyCodes.SPACE);
 
     scoreText = this.add.text(16, 16, 'SCORE: 0', { fontSize: '18px', fill: '#00ffcc', fontStyle: 'bold' });
     highScoreText = this.add.text(16, 40, 'HI-SCORE: ' + highScore, { fontSize: '14px', fill: '#aaa' });
@@ -197,6 +209,7 @@ function create() {
     this.physics.add.overlap(player, enemies, hitPlayer, null, this);
     this.physics.add.overlap(player, enemyBullets, hitPlayerWithBullet, null, this);
     this.physics.add.overlap(player, items, collectItem, null, this);
+    this.physics.add.overlap(laserZone, enemies, hitEnemyWithLaser, null, this);
 
     cardUpgradeGroup = this.add.group();
 }
@@ -261,7 +274,11 @@ function update(time, delta) {
         togglePause.call(this);
     }
 
-    if (isPaused || isSelectingCard) return;
+    if (isPaused || isSelectingCard) {
+    laserGraphics.clear();
+    laserZone.setActive(false);
+    return;
+    }
 
     bgTile.tilePositionY -= (2 + (speedLevel - 1) * 0.5);
 
@@ -297,13 +314,13 @@ function update(time, delta) {
     if (hasStaticAura) {
         staticAuraGraphic.clear();
         staticAuraGraphic.lineStyle(2, 0x00ffff, 0.6);
-        staticAuraGraphic.strokeCircle(player.x, player.y, 90);
+        staticAuraGraphic.strokeCircle(player.x, player.y, 60);
 
         enemies.children.each(e => {
             if (e && e.active) {
                 const d = Phaser.Math.Distance.Between(player.x, player.y, e.x, e.y);
-                if (d < 90) {
-                    e.hp -= 0.08;
+                if (d < 60) {
+                    e.hp -= 0.02;
                     particles.explode(1, e.x, e.y);
                     if (e.isMegaBoss) updateBossHpBar();
                     if (e.hp <= 0) {
@@ -320,7 +337,7 @@ function update(time, delta) {
 
         enemyBullets.children.each(eb => {
             if (eb && eb.active) {
-                if (Phaser.Math.Distance.Between(player.x, player.y, eb.x, eb.y) < 90) {
+                if (Phaser.Math.Distance.Between(player.x, player.y, eb.x, eb.y) < 40) {
                     particles.explode(4, eb.x, eb.y);
                     eb.destroy();
                 }
@@ -328,21 +345,70 @@ function update(time, delta) {
         });
     }
 
-    // 射擊邏輯
-    const isShooting = cursors.space.isDown || (!isDesktop && (isDragging || this.input.activePointer.isDown));
+// 射擊邏輯
+const isShooting = cursors.space.isDown || (!isDesktop && (isDragging || this.input.activePointer.isDown));
+
+if (isShooting && weaponLevel >= 4) {
+    // ⚡ LV4：發射雷射（持續束）
+    laserGraphics.clear();
+
+    const pulseWidth = 20 + Math.sin(time * 0.04) * 5;
+    const laserHeight = player.y - 20;
+
+    laserGraphics.fillStyle(0x00ffff, 0.25);
+    laserGraphics.fillRect(player.x - (pulseWidth + 12) / 2, 0, pulseWidth + 12, laserHeight);
+
+    laserGraphics.fillStyle(0x00ffff, 0.7);
+    laserGraphics.fillRect(player.x - pulseWidth / 2, 0, pulseWidth, laserHeight);
+
+    laserGraphics.fillStyle(0xffffff, 0.95);
+    laserGraphics.fillRect(player.x - 4, 0, 8, laserHeight);
+
+    if (Math.random() < 0.3) {
+        particles.explode(1, player.x + Phaser.Math.Between(-8, 8), player.y - 20);
+    }
+
+    laserZone.setPosition(player.x, laserHeight / 2);
+    laserZone.setSize(pulseWidth, laserHeight);
+    laserZone.setActive(true);
+} else {
+    laserGraphics.clear();
+    laserZone.setActive(false);
+
     if (isShooting && time > lastFired) {
         if (weaponLevel === 1) {
             fireBullet(player.x, player.y - 20, 0, -500);
         } else if (weaponLevel === 2) {
             fireBullet(player.x - 12, player.y - 20, 0, -500);
             fireBullet(player.x + 12, player.y - 20, 0, -500);
-        } else if (weaponLevel >= 3) {
+        } else if (weaponLevel === 3) {
             fireBullet(player.x, player.y - 20, 0, -500);
             fireBullet(player.x, player.y - 20, -150, -480);
             fireBullet(player.x, player.y - 20, 150, -480);
         }
         lastFired = time + 120;
     }
+}
+
+// 分身彈幕:兩側額外高角度子彈（不受主武器等級影響，獨立運作）
+if (isShooting && time > lastFired - 120) {
+    if (mirrorShotLevel >= 1) {
+        fireBullet(player.x - 25, player.y - 5, -220, -460);
+        fireBullet(player.x + 25, player.y - 5, 220, -460);
+    }
+    if (mirrorShotLevel >= 2) {
+        fireBullet(player.x - 35, player.y - 5, -320, -420);
+        fireBullet(player.x + 35, player.y - 5, 320, -420);
+    }
+    if (mirrorShotLevel >= 3) {
+        fireBullet(player.x - 45, player.y - 5, -400, -380);
+        fireBullet(player.x + 45, player.y - 5, 400, -380);
+    }
+    if (mirrorShotLevel >= 4) {
+        fireHomingBullet(player.x - 15, player.y - 10);
+        fireHomingBullet(player.x + 15, player.y - 10);
+    }
+}
 
     if (Phaser.Input.Keyboard.JustDown(keyX)) { triggerUltimate.call(this); }
 
@@ -355,7 +421,20 @@ function update(time, delta) {
         }
     });
 
-    bullets.children.each(b => { if (b && b.y < 0) b.destroy(); });
+    bullets.children.each(b => {
+    if (b && b.active) {
+        // 🎯 追蹤彈持續修正飛行角度
+        if (b.isHoming) {
+            const target = enemies.getFirstAlive();
+            if (target) {
+                const angle = Phaser.Math.Angle.Between(b.x, b.y, target.x, target.y);
+                b.setVelocity(Math.cos(angle) * b.homingSpeed, Math.sin(angle) * b.homingSpeed);
+                b.setRotation(angle);
+            }
+        }
+        if (b.y < 0) b.destroy();
+    }
+});
     enemyBullets.children.each(eb => { if (eb && (eb.y > 640 || eb.y < -50 || eb.x < -50 || eb.x > 530)) eb.destroy(); });
     
     enemies.children.each(e => { 
@@ -389,11 +468,33 @@ function fireBullet(x, y, vx, vy, isPlayerMain = true) {
         // 🎯 暴擊算牌
         let isCrit = isPlayerMain && Math.random() < critChance;
         bullet.damage = isCrit ? 3 : 1;
-        bullet.isExplosive = hasExplosiveBullets;
 
         if (isCrit) {
             bullet.setTint(0xff00ff);
             bullet.setScale(1.4);
+        }
+    }
+}
+
+// 🎯 追蹤彈：分身彈幕 LV4 專用
+function fireHomingBullet(x, y) {
+    const bullet = bullets.create(x, y, 'bullet');
+    if (bullet) {
+        bullet.setTint(0x00ff88);
+        bullet.setScale(1.15);
+
+        let isCrit = Math.random() < critChance;
+        bullet.damage = isCrit ? 3 : 1;
+        bullet.isHoming = true;
+        bullet.homingSpeed = 480;
+
+        const target = enemies.getFirstAlive();
+        if (target) {
+            const angle = Phaser.Math.Angle.Between(x, y, target.x, target.y);
+            bullet.setVelocity(Math.cos(angle) * bullet.homingSpeed, Math.sin(angle) * bullet.homingSpeed);
+            bullet.setRotation(angle);
+        } else {
+            bullet.setVelocity(0, -bullet.homingSpeed);
         }
     }
 }
@@ -537,10 +638,10 @@ function showUpgradeCards() {
             }
         },
         { 
-            id: 'explosive', icon: '💥', title: '連環爆破彈', desc: '子彈擊中敵人時\n觸發小範圍二次火光爆炸', color: 0xff6600, 
+            id: 'mirror', icon: '💥', title: '分身彈幕', desc: '在兩側額外發射高角度子彈', color: 0xff6600, 
             apply: () => {
-                hasExplosiveBullets = true;
-                showFloatingText.call(this, player.x, player.y - 30, 'EXPLOSIVE ROUNDS!', '#ff6600');
+                mirrorShotLevel = Math.min(mirrorShotLevel + 1, 4);
+                showFloatingText.call(this, player.x, player.y - 30, 'MIRROR SHOT!', '#ff6600');
             }
         },
         { 
@@ -573,8 +674,11 @@ function showUpgradeCards() {
         }
     ];
 
+    // 🎴 已滿等的卡牌要從候選池移除
+    const availableCards = allCards.filter(c => !(c.id === 'mirror' && mirrorShotLevel >= 4));
+
     // 隨機抽選 3 張不重複卡牌
-    const selectedCards = Phaser.Utils.Array.Shuffle([...allCards]).slice(0, 3);
+    const selectedCards = Phaser.Utils.Array.Shuffle([...availableCards]).slice(0, 3);
 
     selectedCards.forEach((card, index) => {
         const cardY = 200 + (index * 130);
@@ -812,6 +916,42 @@ function hitEnemy(bullet, enemy) {
     }
 }
 
+// ⚡ 雷射命中判定（持續束傷害，節流避免過快扣血）
+function hitEnemyWithLaser(zone, enemy) {
+    if (!zone.active || !enemy || !enemy.active) return;
+
+    const now = this.time.now;
+    if (!enemy.lastLaserHit || now - enemy.lastLaserHit > 60) {
+        enemy.lastLaserHit = now;
+        enemy.hp -= 1;
+        particles.explode(4, enemy.x, enemy.y);
+
+        if (enemy.isMegaBoss) updateBossHpBar();
+
+        enemy.setTint(0xffffff);
+        this.time.delayedCall(60, () => {
+            if (enemy && enemy.active) {
+                enemy.setTint(enemy.isMegaBoss ? 0xff0044 : (enemy.isBoss ? 0xffaa00 : 0xffffff));
+            }
+        });
+
+        if (enemy.hp <= 0) {
+            if (enemy.shootTimer) enemy.shootTimer.remove();
+
+            if (enemy.isMegaBoss) {
+                handleMegaBossDefeated.call(this);
+            } else {
+                createExplosion.call(this, enemy.x, enemy.y, enemy.isBoss ? 45 : 25, enemy.isBoss ? 1.5 : 1.0);
+                this.cameras.main.shake(enemy.isBoss ? 120 : 60, enemy.isBoss ? 0.008 : 0.003);
+
+                if (Phaser.Math.Between(1, 100) <= 10) { spawnItem.call(this, enemy.x, enemy.y); }
+                addScore.call(this, enemy.isBoss ? 50 : 10);
+                enemy.destroy();
+            }
+        }
+    }
+}
+
 function spawnItem(x, y) {
     const types = ['heal', 'power', 'shield'];
     const chosenType = Phaser.Utils.Array.GetRandom(types);
@@ -843,14 +983,15 @@ function collectItem(player, item) {
             showFloatingText.call(this, player.x, player.y - 30, '+100 PTS', '#ffff00');
         }
     } else if (type === 'power') {
-        if (weaponLevel < 3) {
-            weaponLevel += 1;
-            weaponText.setText('⚡ 火力: LV' + weaponLevel);
-            showFloatingText.call(this, player.x, player.y - 30, 'POWER UP!', '#00ffff');
-        } else {
-            addScore.call(this, 200);
-            showFloatingText.call(this, player.x, player.y - 30, '+200 PTS', '#ffff00');
-        }
+    if (weaponLevel < 4) {
+        weaponLevel += 1;
+        const lvlText = weaponLevel === 4 ? '⚡ LASER!' : ('LV' + weaponLevel);
+        weaponText.setText('⚡ 火力: ' + lvlText);
+        showFloatingText.call(this, player.x, player.y - 30, weaponLevel === 4 ? 'LASER POWER!' : 'POWER UP!', '#00ffff');
+    } else {
+        addScore.call(this, 200);
+        showFloatingText.call(this, player.x, player.y - 30, '+200 PTS', '#ffff00');
+    }
     } else if (type === 'shield') {
         activateShield.call(this);
         showFloatingText.call(this, player.x, player.y - 30, 'SHIELD ON!', '#0088ff');
@@ -937,8 +1078,9 @@ function applyDamageToPlayer() {
     livesText.setText('❤️ x ' + lives);
 
     if (weaponLevel > 1) {
-        weaponLevel -= 1;
-        weaponText.setText('⚡ 火力: LV' + weaponLevel);
+    weaponLevel -= 1;
+    const lvlText = weaponLevel === 4 ? '⚡ LASER!' : ('LV' + weaponLevel);
+    weaponText.setText('⚡ 火力: ' + lvlText);
     }
 
     this.cameras.main.shake(200, 0.015);
