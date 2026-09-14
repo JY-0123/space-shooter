@@ -408,8 +408,12 @@ if (isShooting && time > lastMirrorFired) {
         fireBullet(player.x + 45, player.y - 5, 400, -380);
     }
     if (mirrorShotLevel >= 4) {
-        fireHomingBullet(player.x - 15, player.y - 10);
-        fireHomingBullet(player.x + 15, player.y - 10);
+    const aliveEnemies = enemies.getChildren().filter(e => e && e.active);
+    const targetA = aliveEnemies[0] || null;
+    const targetB = aliveEnemies[1] || targetA;
+
+    fireHomingBullet(player.x - 15, player.y - 10, targetA);
+    fireHomingBullet(player.x + 15, player.y - 10, targetB);
     }
     lastMirrorFired = time + 120;
 }
@@ -480,8 +484,8 @@ function fireBullet(x, y, vx, vy, isPlayerMain = true) {
     }
 }
 
-// 🎯 追蹤彈：分身彈幕 LV4 專用
-function fireHomingBullet(x, y) {
+// 🎯 追蹤彈：分身彈幕 LV4 專用（可指定 preferredTarget，讓多發彈分散鎖定不同敵人）
+function fireHomingBullet(x, y, preferredTarget = null) {
     const bullet = bullets.create(x, y, 'bullet');
     if (bullet) {
         bullet.setTint(0x00ff88);
@@ -492,7 +496,7 @@ function fireHomingBullet(x, y) {
         bullet.isHoming = true;
         bullet.homingSpeed = 480;
 
-        const target = enemies.getFirstAlive();
+        const target = (preferredTarget && preferredTarget.active) ? preferredTarget : enemies.getFirstAlive();
         if (target) {
             const angle = Phaser.Math.Angle.Between(x, y, target.x, target.y);
             bullet.setVelocity(Math.cos(angle) * bullet.homingSpeed, Math.sin(angle) * bullet.homingSpeed);
@@ -868,7 +872,6 @@ function createExplosion(x, y, count = 25, scaleMod = 1.0) {
 
 function hitEnemy(bullet, enemy) {
     const dmg = bullet.damage || 1;
-    const isExplosive = bullet.isExplosive;
 
     bullet.destroy();
     enemy.hp -= dmg;
@@ -876,23 +879,6 @@ function hitEnemy(bullet, enemy) {
 
     if (dmg > 1) {
         showFloatingText.call(this, enemy.x, enemy.y - 20, 'CRIT!', '#ff00ff');
-    }
-
-    // 💥 爆破子彈觸發範圍傷害
-    if (isExplosive) {
-        createExplosion.call(this, enemy.x, enemy.y, 12, 0.6);
-        enemies.children.each(e => {
-            if (e && e.active && e !== enemy) {
-                if (Phaser.Math.Distance.Between(enemy.x, enemy.y, e.x, e.y) < 60) {
-                    e.hp -= 1;
-                    if (e.hp <= 0 && !e.isMegaBoss) {
-                        createExplosion.call(this, e.x, e.y, 15);
-                        addScore.call(this, 10);
-                        e.destroy();
-                    }
-                }
-            }
-        });
     }
 
     if (enemy.isMegaBoss) updateBossHpBar();
