@@ -58,7 +58,8 @@ let globalSpeedMod = 1.0;            // 時空減速係數
 let magnetRadius = 120;              // 磁鐵範圍
 let critChance = 0;                  // 暴擊率 (0 ~ 1)
 
-let lastMirrorFired = 0;   // 分身彈幕獨立冷卻
+let lastMirrorFired = 0;    // 分身彈幕(非追蹤部分)獨立冷卻
+let lastHomingFired = 0;    // 追蹤彈獨立冷卻(只用於打 Boss 時的 0.5 秒節奏)
 
 // ⚡ 雷射相關變數
 let laserGraphics, laserZone;
@@ -118,6 +119,7 @@ function create() {
     drone = null;
     mirrorShotLevel = 0;
     lastMirrorFired = 0;
+    lastHomingFired = 0;
     hasStaticAura = false;
     globalSpeedMod = 1.0;
     magnetRadius = 120;
@@ -407,15 +409,29 @@ if (isShooting && time > lastMirrorFired) {
         fireBullet(player.x - 45, player.y - 5, -400, -380);
         fireBullet(player.x + 45, player.y - 5, 400, -380);
     }
-    if (mirrorShotLevel >= 4) {
-    const aliveEnemies = enemies.getChildren().filter(e => e && e.active);
-    const targetA = aliveEnemies[0] || null;
-    const targetB = aliveEnemies[1] || targetA;
-
-    fireHomingBullet(player.x - 15, player.y - 10, targetA);
-    fireHomingBullet(player.x + 15, player.y - 10, targetB);
-    }
     lastMirrorFired = time + 120;
+}
+
+// 🎯 追蹤彈：LV4 獨立觸發規則
+if (isShooting && mirrorShotLevel >= 4) {
+    if (megaBoss && megaBoss.active) {
+        // Boss 戰：固定每 0.5 秒發射一發追蹤彈
+        if (time > lastHomingFired) {
+            fireHomingBullet(player.x, player.y - 10, megaBoss);
+            lastHomingFired = time + 500;
+        }
+    } else {
+        // 一般小怪：有幾隻就發幾發，且要等上一波追蹤彈都消失才能發下一波
+        const aliveEnemies = enemies.getChildren().filter(e => e && e.active);
+        const activeHomingCount = bullets.getChildren().filter(b => b && b.active && b.isHoming).length;
+
+        if (aliveEnemies.length > 0 && activeHomingCount === 0 && time > lastHomingFired) {
+            aliveEnemies.forEach(target => {
+                fireHomingBullet(player.x, player.y - 10, target);
+            });
+            lastHomingFired = time + 600; // 避免同一幀內瘋狂重複觸發
+        }
+    }
 }
 
     if (Phaser.Input.Keyboard.JustDown(keyX)) { triggerUltimate.call(this); }
@@ -873,6 +889,7 @@ function createExplosion(x, y, count = 25, scaleMod = 1.0) {
 function hitEnemy(bullet, enemy) {
     const dmg = bullet.damage || 1;
 
+    bullet.isHoming = false;
     bullet.destroy();
     enemy.hp -= dmg;
     particles.explode(dmg > 1 ? 15 : 8, bullet.x, bullet.y);
