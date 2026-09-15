@@ -71,8 +71,9 @@ let megaBoss = null;
 let bossHpBg, bossHpBar, bossHpText;
 let megaBossTimer;
 let megaBossAttackTimer = null;
+let megaBossTimeLimitTimer = null;   // Boss 限時懲罰計時器
 let megaBossCount = 0;
-
+let bossTimeLimitText;               // 倒數顯示
 // 🎴 3選1選單 UI
 let cardUpgradeGroup;
 let isSelectingCard = false;
@@ -114,6 +115,7 @@ function create() {
     isGameOver = false; isInvulnerable = false; isPaused = false; isGameStarted = false;
     isSelectingCard = false;
     megaBoss = null; megaBossCount = 0;
+    megaBossTimeLimitTimer = null;
 
     // 重置新能力
     drone = null;
@@ -176,6 +178,7 @@ function create() {
     bossHpBg = this.add.rectangle(240, 95, 300, 16, 0x333333).setStrokeStyle(2, 0xff0055).setDepth(15).setVisible(false);
     bossHpBar = this.add.rectangle(90, 87, 300, 16, 0xff0055).setOrigin(0, 0).setDepth(15).setVisible(false);
     bossHpText = this.add.text(240, 72, '⚠️ MEGA BOSS ⚠️', { fontSize: '14px', fill: '#ff0055', fontStyle: 'bold' }).setOrigin(0.5).setDepth(15).setVisible(false);
+    bossTimeLimitText = this.add.text(240, 112, '', { fontSize: '14px', fill: '#ffcc00', fontStyle: 'bold' }).setOrigin(0.5).setDepth(15).setVisible(false);
 
     setupTouchControls.call(this);
 
@@ -397,15 +400,15 @@ if (isShooting && weaponLevel >= 4) {
 
 // 分身彈幕:兩側額外高角度子彈（獨立冷卻計時，不受主武器影響）
 if (isShooting && time > lastMirrorFired) {
-    if (mirrorShotLevel >= 1) {
+    if (mirrorShotLevel >= 1 && mirrorShotLevel < 4) {
         fireBullet(player.x - 25, player.y - 5, -220, -460);
         fireBullet(player.x + 25, player.y - 5, 220, -460);
     }
-    if (mirrorShotLevel >= 2) {
+    if (mirrorShotLevel >= 2 && mirrorShotLevel < 4) {
         fireBullet(player.x - 35, player.y - 5, -320, -420);
         fireBullet(player.x + 35, player.y - 5, 320, -420);
     }
-    if (mirrorShotLevel >= 3) {
+    if (mirrorShotLevel >= 3 && mirrorShotLevel < 4) {
         fireBullet(player.x - 45, player.y - 5, -400, -380);
         fireBullet(player.x + 45, player.y - 5, 400, -380);
     }
@@ -563,6 +566,36 @@ function spawnMegaBoss() {
         },
         loop: true
     });
+
+    // ⏰ Boss 限時：時間到未擊殺就懲罰
+    const timeLimitSec = 25;   // 限時 25 秒，可自行調整
+    bossTimeLimitText.setVisible(true);
+    bossTimeLimitText.setText('⏰ 剩餘時間: ' + timeLimitSec + ' 秒');
+
+    if (megaBossTimeLimitTimer) megaBossTimeLimitTimer.remove();
+    let remainingSec = timeLimitSec;
+    megaBossTimeLimitTimer = this.time.addEvent({
+        delay: 1000,
+        callback: () => {
+            if (!megaBoss || !megaBoss.active || isGameOver) return;
+            if (isPaused || isSelectingCard) return;
+
+            remainingSec -= 1;
+            bossTimeLimitText.setText('⏰ 剩餘時間: ' + Math.max(0, remainingSec) + ' 秒');
+
+            if (remainingSec <= 5 && remainingSec > 0) {
+                bossTimeLimitText.setColor('#ff0055');
+            }
+
+            if (remainingSec <= 0) {
+                applyBossTimeoutPenalty.call(this);
+                remainingSec = timeLimitSec;                       // 重新開始倒數
+                bossTimeLimitText.setColor('#ffcc00');
+                bossTimeLimitText.setText('⏰ 剩餘時間: ' + timeLimitSec + ' 秒');
+            }
+        },
+        loop: true
+    });
 }
 
 function fireMegaBossBullets(x, y) {
@@ -614,6 +647,8 @@ function updateBossHpBar() {
 
 function handleMegaBossDefeated() {
     if (megaBossAttackTimer) megaBossAttackTimer.remove();
+    if (megaBossTimeLimitTimer) megaBossTimeLimitTimer.remove();
+    bossTimeLimitText.setVisible(false);
 
     for (let i = 0; i < 6; i++) {
         this.time.delayedCall(i * 100, () => {
@@ -1113,6 +1148,63 @@ function applyDamageToPlayer() {
             targets: player, alpha: 0.2, duration: 100, yoyo: true, repeat: 7,
             onComplete: () => { player.setAlpha(1); isInvulnerable = false; }
         });
+    }
+}
+
+// ⏰ Boss 限時未擊殺的懲罰：優先扣技能，沒技能可扣就扣命
+function applyBossTimeoutPenalty() {
+    this.cameras.main.flash(400, 255, 0, 0);
+    this.cameras.main.shake(300, 0.015);
+
+    if (mirrorShotLevel > 0) {
+        mirrorShotLevel -= 1;
+        showFloatingText.call(this, 240, 300, '⚠️ 分身彈幕 -1 階！', '#ff6600');
+    } else if (weaponLevel > 1) {
+        weaponLevel -= 1;
+        const lvlText = weaponLevel === 4 ? '⚡ LASER!' : ('LV' + weaponLevel);
+        weaponText.setText('⚡ 火力: ' + lvlText);
+        showFloatingText.call(this, 240, 300, '⚠️ 火力 -1 階！', '#00ffff');
+    } else if (critChance > 0) {
+        critChance = Math.max(0, critChance - 0.3);
+        showFloatingText.call(this, 240, 300, '⚠️ 暴擊率下降！', '#ff0066');
+    } else if (drone) {
+        drone.destroy();
+        drone = null;
+        showFloatingText.call(this, 240, 300, '⚠️ 護衛機損毀！', '#00ffcc');
+    } else if (hasStaticAura) {
+        hasStaticAura = false;
+        staticAuraGraphic.clear();
+        showFloatingText.call(this, 240, 300, '⚠️ 靜電場失效！', '#00ffff');
+    } else if (magnetRadius > 120) {
+        magnetRadius = 120;
+        showFloatingText.call(this, 240, 300, '⚠️ 磁鐵失效！', '#ffcc00');
+    } else if (globalSpeedMod < 1.0) {
+        globalSpeedMod = Math.min(1.0, globalSpeedMod / 0.65);
+        showFloatingText.call(this, 240, 300, '⚠️ 時空減速失效！', '#aa00ff');
+    } else {
+        showFloatingText.call(this, 240, 300, '💔 超時！失去一條生命！', '#ff0000');
+        lives -= 1;
+        livesText.setText('❤️ x ' + lives);
+
+        if (lives <= 0) {
+            isGameOver = true;
+            this.physics.pause();
+            laserGraphics.clear();
+            laserZone.setActive(false);
+            if (megaBossTimeLimitTimer) megaBossTimeLimitTimer.remove();
+            if (megaBossAttackTimer) megaBossAttackTimer.remove();
+            player.setTint(0xff0000);
+
+            this.add.text(240, 240, 'GAME OVER', { fontSize: '40px', fill: '#ff0055', fontStyle: 'bold' }).setOrigin(0.5);
+            this.add.text(240, 290, '最終得分: ' + score, { fontSize: '22px', fill: '#00ffcc' }).setOrigin(0.5);
+            this.add.text(240, 320, '最高紀錄: ' + highScore, { fontSize: '18px', fill: '#aaaaaa' }).setOrigin(0.5);
+
+            const restartMsg = isDesktop ? '按 [ R ] 鍵重新開始' : '👉 點擊螢幕 重新開始 👈';
+            this.add.text(240, 370, restartMsg, { fontSize: '18px', fill: '#ffffff' }).setOrigin(0.5);
+
+            this.input.keyboard.once('keydown-R', () => { this.scene.restart(); });
+            this.input.once('pointerdown', () => { this.scene.restart(); });
+        }
     }
 }
 </script>
