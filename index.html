@@ -74,6 +74,8 @@ let megaBossAttackTimer = null;
 let megaBossTimeLimitTimer = null;   // Boss 限時懲罰計時器
 let megaBossCount = 0;
 let bossTimeLimitText;               // 倒數顯示
+let waveNumber = 1;                  // 目前波次
+let waveText;                        // 波次顯示 UI
 // 🎴 3選1選單 UI
 let cardUpgradeGroup;
 let isSelectingCard = false;
@@ -87,6 +89,71 @@ let spawnTimer;
 
 let isDragging = false;
 let isDesktop = false;
+
+// 🔊 音效系統：用 Web Audio API 即時合成，不需外部音檔
+let audioCtx = null;
+
+function getAudioCtx() {
+    if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    // 瀏覽器政策要求使用者互動後才能啟動音效，這裡做保險
+    if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+    }
+    return audioCtx;
+}
+
+// 通用的「嗶」聲產生器
+function playTone(freq, duration, type = 'square', volume = 0.15, freqSlide = 0) {
+    try {
+        const ctx = getAudioCtx();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, ctx.currentTime);
+        if (freqSlide !== 0) {
+            osc.frequency.linearRampToValueAtTime(freq + freqSlide, ctx.currentTime + duration);
+        }
+
+        gain.gain.setValueAtTime(volume, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + duration);
+    } catch (e) {
+        // 音效播放失敗不應該中斷遊戲
+    }
+}
+
+// 🔫 射擊音效：短促高音
+function playShootSound() {
+    playTone(880, 0.06, 'square', 0.06, -300);
+}
+
+// 💥 爆炸音效：低頻噪音式下滑音
+function playExplosionSound() {
+    playTone(150, 0.3, 'sawtooth', 0.18, -100);
+}
+
+// 🎯 命中音效：短促中音
+function playHitSound() {
+    playTone(500, 0.05, 'triangle', 0.08, -150);
+}
+
+// 🚨 Boss 登場音效：低沉上升音
+function playBossWarningSound() {
+    playTone(100, 0.5, 'sawtooth', 0.2, 150);
+}
+
+// 💊 撿道具音效：清脆上升音
+function playItemSound() {
+    playTone(600, 0.15, 'sine', 0.12, 400);
+}
 
 function preload() {
     this.load.setBaseURL('https://labs.phaser.io');
@@ -116,6 +183,7 @@ function create() {
     isSelectingCard = false;
     megaBoss = null; megaBossCount = 0;
     megaBossTimeLimitTimer = null;
+    waveNumber = 1;
 
     // 重置新能力
     drone = null;
@@ -173,7 +241,7 @@ function create() {
     livesText = this.add.text(360, 16, '❤️ x 5', { fontSize: '18px', fill: '#ff4444', fontStyle: 'bold' });
     const bombLabel = isDesktop ? '💣 [X] 核彈: 3' : '💣 核彈: 3';
     bombsText = this.add.text(16, 62, bombLabel, { fontSize: '16px', fill: '#ffcc00', fontStyle: 'bold' });
-    weaponText = this.add.text(320, 42, '⚡ 火力: LV1', { fontSize: '16px', fill: '#00ffff', fontStyle: 'bold' });
+    waveText = this.add.text(16, 86, '🌊 WAVE 1', { fontSize: '16px', fill: '#ffcc00', fontStyle: 'bold' });
 
     bossHpBg = this.add.rectangle(240, 95, 300, 16, 0x333333).setStrokeStyle(2, 0xff0055).setDepth(15).setVisible(false);
     bossHpBar = this.add.rectangle(90, 87, 300, 16, 0xff0055).setOrigin(0, 0).setDepth(15).setVisible(false);
@@ -500,6 +568,8 @@ function fireBullet(x, y, vx, vy, isPlayerMain = true) {
             bullet.setTint(0xff00ff);
             bullet.setScale(1.4);
         }
+
+        if (isPlayerMain) playShootSound();
     }
 }
 
@@ -543,6 +613,7 @@ function spawnMegaBoss() {
 
     showFloatingText.call(this, 240, 200, '🚨 MEGA BOSS #' + megaBossCount + ' 警告！ 🚨', '#ff0055');
     this.cameras.main.shake(400, 0.015);
+    playBossWarningSound();
 
     megaBoss = enemies.create(240, -60, 'enemy');
     megaBoss.setScale(5.5);
@@ -649,6 +720,14 @@ function handleMegaBossDefeated() {
     if (megaBossAttackTimer) megaBossAttackTimer.remove();
     if (megaBossTimeLimitTimer) megaBossTimeLimitTimer.remove();
     bossTimeLimitText.setVisible(false);
+
+    // 🌊 波次推進：打死 Boss 後直接進入下一波，並提升整體強度
+    waveNumber += 1;
+    waveText.setText('🌊 WAVE ' + waveNumber);
+    baseEnemySpeed += 25;
+    spawnDelay = Math.max(200, spawnDelay - 60);
+    startSpawnTimer.call(this);
+    showFloatingText.call(this, 240, 260, '🌊 WAVE ' + waveNumber + ' 開始！', '#ffcc00');
 
     for (let i = 0; i < 6; i++) {
         this.time.delayedCall(i * 100, () => {
@@ -791,8 +870,10 @@ function spawnEnemy() {
     const enemy = enemies.create(x, -20, 'enemy');
     
     if (enemy) {
-        const isBoss = Phaser.Math.Between(1, 100) <= 5;
-        if (isBoss) {
+        const roll = Phaser.Math.Between(1, 100);
+
+        if (roll <= 5) {
+            // 🟠 mini-boss（原本的機制，不變）
             enemy.setScale(3.0);
             enemy.body.setSize(enemy.width, enemy.height);
             enemy.hp = 8 + (speedLevel - 1) * 2;
@@ -812,7 +893,45 @@ function spawnEnemy() {
 
             showFloatingText.call(this, 240, 200, '⚠️ WARNING: BOSS! ⚠️', '#ff0055');
             this.cameras.main.shake(150, 0.008);
+
+        } else if (roll <= 17) {
+            // 🎯 狙擊怪：慢速移動，精準瞄準玩家開火
+            enemy.setScale(1.3);
+            enemy.hp = 2;
+            enemy.isSniper = true;
+            enemy.setTint(0x8844ff);
+            enemy.setVelocityY((baseEnemySpeed * 0.5) * globalSpeedMod);
+
+            enemy.shootTimer = this.time.addEvent({
+                delay: 1600,
+                callback: () => {
+                    if (enemy && enemy.active && isGameStarted && !isGameOver && !isPaused && !isSelectingCard) {
+                        fireSniperBullet.call(this, enemy.x, enemy.y + 15);
+                    }
+                },
+                loop: true
+            });
+
+        } else if (roll <= 30) {
+            // 💥 分裂怪：血量厚、體型大，死亡時裂成兩隻小怪
+            enemy.setScale(2.0);
+            enemy.hp = 3;
+            enemy.isSplitter = true;
+            enemy.setTint(0xff44aa);
+            enemy.setVelocityY((baseEnemySpeed * 0.75) * globalSpeedMod);
+
+            enemy.shootTimer = this.time.addEvent({
+                delay: 1300,
+                callback: () => {
+                    if (enemy && enemy.active && isGameStarted && !isGameOver && !isPaused && !isSelectingCard) {
+                        fireEnemyBullet.call(this, enemy.x, enemy.y + 15, 1);
+                    }
+                },
+                loop: true
+            });
+
         } else {
+            // 一般小怪（原本的機制，不變）
             const scale = Phaser.Math.FloatBetween(0.8, 1.5);
             enemy.setScale(scale);
             enemy.hp = 1;
@@ -823,6 +942,30 @@ function spawnEnemy() {
                 callback: () => {
                     if (enemy && enemy.active && isGameStarted && !isGameOver && !isPaused && !isSelectingCard) {
                         fireEnemyBullet.call(this, enemy.x, enemy.y + 15, 1);
+                    }
+                },
+                loop: true
+            });
+        }
+    }
+}
+
+// 💥 分裂怪死亡後，原地生成兩隻小怪
+function spawnSplitEnemies(x, y) {
+    for (let i = 0; i < 2; i++) {
+        const offsetX = i === 0 ? -25 : 25;
+        const child = enemies.create(x + offsetX, y, 'enemy');
+        if (child) {
+            child.setScale(0.9);
+            child.hp = 1;
+            child.setTint(0xffffff);
+            child.setVelocity(offsetX * 3, (baseEnemySpeed + 30) * globalSpeedMod);
+
+            child.shootTimer = this.time.addEvent({
+                delay: 1300,
+                callback: () => {
+                    if (child && child.active && isGameStarted && !isGameOver && !isPaused && !isSelectingCard) {
+                        fireEnemyBullet.call(this, child.x, child.y + 15, 1);
                     }
                 },
                 loop: true
@@ -888,6 +1031,19 @@ function fireEnemyBullet(x, y, count = 1) {
     }
 }
 
+// 🎯 狙擊怪專用子彈：精準瞄準玩家當下位置
+function fireSniperBullet(x, y) {
+    if (!player || !player.active) return;
+    const speed = (350 + (speedLevel * 15)) * globalSpeedMod;
+
+    const eBullet = enemyBullets.create(x, y, 'enemyBullet');
+    if (eBullet) {
+        eBullet.setTint(0x8844ff);
+        eBullet.setScale(1.3);
+        this.physics.moveToObject(eBullet, player, speed);
+    }
+}
+
 function addScore(amount) {
     score += amount;
     scoreText.setText('SCORE: ' + score);
@@ -928,6 +1084,7 @@ function hitEnemy(bullet, enemy) {
     bullet.destroy();
     enemy.hp -= dmg;
     particles.explode(dmg > 1 ? 15 : 8, bullet.x, bullet.y);
+    if (enemy.hp > 0) playHitSound();
 
     if (dmg > 1) {
         showFloatingText.call(this, enemy.x, enemy.y - 20, 'CRIT!', '#ff00ff');
@@ -944,15 +1101,23 @@ function hitEnemy(bullet, enemy) {
 
     if (enemy.hp <= 0) {
         if (enemy.shootTimer) enemy.shootTimer.remove();
+        playExplosionSound();
 
         if (enemy.isMegaBoss) {
             handleMegaBossDefeated.call(this);
         } else {
             createExplosion.call(this, enemy.x, enemy.y, enemy.isBoss ? 45 : 25, enemy.isBoss ? 1.5 : 1.0);
             this.cameras.main.shake(enemy.isBoss ? 120 : 60, enemy.isBoss ? 0.008 : 0.003);
+            playExplosionSound();
 
             if (Phaser.Math.Between(1, 100) <= 10) { spawnItem.call(this, enemy.x, enemy.y); }
             addScore.call(this, enemy.isBoss ? 50 : 10);
+
+            // 💥 分裂怪死亡時裂成兩隻小怪
+            if (enemy.isSplitter) {
+                spawnSplitEnemies.call(this, enemy.x, enemy.y);
+            }
+
             enemy.destroy();
         }
     }
@@ -979,15 +1144,22 @@ function hitEnemyWithLaser(zone, enemy) {
 
         if (enemy.hp <= 0) {
             if (enemy.shootTimer) enemy.shootTimer.remove();
+            playExplosionSound();
 
             if (enemy.isMegaBoss) {
                 handleMegaBossDefeated.call(this);
             } else {
                 createExplosion.call(this, enemy.x, enemy.y, enemy.isBoss ? 45 : 25, enemy.isBoss ? 1.5 : 1.0);
+                playExplosionSound();
                 this.cameras.main.shake(enemy.isBoss ? 120 : 60, enemy.isBoss ? 0.008 : 0.003);
 
                 if (Phaser.Math.Between(1, 100) <= 10) { spawnItem.call(this, enemy.x, enemy.y); }
                 addScore.call(this, enemy.isBoss ? 50 : 10);
+
+                if (enemy.isSplitter) {
+                    spawnSplitEnemies.call(this, enemy.x, enemy.y);
+                }
+
                 enemy.destroy();
             }
         }
@@ -1014,6 +1186,7 @@ function collectItem(player, item) {
     const type = item.type;
     item.destroy();
     particles.explode(15, player.x, player.y);
+    playItemSound();
 
     if (type === 'heal') {
         if (lives < 5) {
@@ -1078,10 +1251,12 @@ function triggerUltimate() {
                 createExplosion.call(this, enemy.x, enemy.y, 40, 1.5);
                 if (enemy.hp <= 0) {
                     handleMegaBossDefeated.call(this);
+                    playExplosionSound();
                 }
             } else {
                 if (enemy.shootTimer) enemy.shootTimer.remove();
                 createExplosion.call(this, enemy.x, enemy.y, 25, 1.0);
+                playExplosionSound();
                 addScore.call(this, enemy.isBoss ? 50 : 10);
                 enemy.destroy();
             }
@@ -1091,6 +1266,7 @@ function triggerUltimate() {
 
 function hitPlayerWithBullet(player, bullet) {
     bullet.destroy();
+    playExplosionSound();
     applyDamageToPlayer.call(this);
 }
 
@@ -1113,6 +1289,7 @@ function applyDamageToPlayer() {
         this.cameras.main.shake(150, 0.01);
         particles.explode(20, player.x, player.y);
         showFloatingText.call(this, player.x, player.y - 30, 'SHIELD BROKEN!', '#ff9900');
+        playShieldBreakSound();
         return;
     }
 
@@ -1155,6 +1332,7 @@ function applyDamageToPlayer() {
 function applyBossTimeoutPenalty() {
     this.cameras.main.flash(400, 255, 0, 0);
     this.cameras.main.shake(300, 0.015);
+    playBossTimeoutSound();
 
     if (mirrorShotLevel > 0) {
         mirrorShotLevel -= 1;
@@ -1182,6 +1360,7 @@ function applyBossTimeoutPenalty() {
         globalSpeedMod = Math.min(1.0, globalSpeedMod / 0.65);
         showFloatingText.call(this, 240, 300, '⚠️ 時空減速失效！', '#aa00ff');
     } else {
+        playBossTimeoutSound();
         showFloatingText.call(this, 240, 300, '💔 超時！失去一條生命！', '#ff0000');
         lives -= 1;
         livesText.setText('❤️ x ' + lives);
